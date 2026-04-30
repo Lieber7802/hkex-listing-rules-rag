@@ -1,0 +1,202 @@
+PHASE 3: LLM-Based Tool Input Extraction
+COMPREHENSIVE PLANNING DOCUMENTATION INDEX
+
+This directory contains complete planning and specifications for Phase 3 implementation.
+
+DOCUMENT OVERVIEW
+=================
+
+1. START HERE:
+   - PHASE3_IMPLEMENTATION_OVERVIEW.md (this directory, main document)
+   - PHASE3_SUMMARY.txt (this directory, executive summary)
+
+2. DETAILED SPRINT SPECIFICATIONS:
+   - docs/superpowers/plans/SPRINT1_SPECIFICATION.txt (QueryParser module - 59 tests)
+   - docs/superpowers/plans/PHASE3_SUMMARY.txt (Detailed summary with 6-sprint breakdown)
+
+3. EXISTING PHASE PLANS (for context):
+   - docs/superpowers/plans/2026-04-29-phase2-stage2-tool-integration-plan.md
+   - docs/superpowers/plans/2026-04-29-resolve-outstanding-items-plan.md
+
+FILE STRUCTURE
+==============
+
+This directory (root):
+  PHASE3_IMPLEMENTATION_OVERVIEW.md - Main document with full context
+  PHASE3_SUMMARY.txt - Executive summary
+  PHASE3_PLANNING_INDEX.txt - This file
+
+docs/superpowers/plans/:
+  PHASE3_SUMMARY.txt - Detailed summary
+  SPRINT1_SPECIFICATION.txt - Detailed first sprint spec
+
+KEY PROBLEM
+===========
+
+Current State:
+- Tool infrastructure complete (4 tools, ToolRegistry, tool_executor_node)
+- BUT tool_inputs_hint is ALWAYS empty {} (line 112, line 139 in llm_route_planner.py)
+- Result: ALL tool executions fail validation
+- No tools ever execute
+
+Why:
+  User Query
+    → LLMRoutePlanner._parse_llm_response() sets tool_inputs_hint = {}
+    → tool_executor_node receives {}
+    → Validation fails: "Missing required field..."
+    → Tool never runs
+
+SOLUTION: 3-LAYER EXTRACTION
+=============================
+
+Layer 1: LLM-Based (Primary)
+  - Enhanced prompt requests tool_inputs_hint
+  - LLM extracts from query text
+  - Fallback if unavailable
+
+Layer 2: Heuristic (Secondary)
+  - Regex + keyword matching
+  - No LLM dependency
+  - Fast, deterministic
+
+Layer 3: Recovery (Tertiary)
+  - Retry extraction on validation failure
+  - Graceful degradation
+  - Transparency via extraction_log
+
+IMPLEMENTATION PLAN
+===================
+
+6 Sprints, 16-20 Hours Total:
+
+Sprint 1 (2h):  QueryParser module - 7 static methods, 59 tests
+Sprint 2 (1.5h): LLM prompt enhancement - parse tool_inputs_hint from LLM
+Sprint 3 (2.5h): SizeTestInputExtractor - extract 10 financial fields
+Sprint 4 (2h):   Tool input extraction node - V2 graph integration
+Sprint 5 (1.5h): Fallback integration - recovery on validation failure
+Sprint 6 (2h):   E2E testing + documentation
+
+FILES TO CREATE (10)
+====================
+
+app/tools/query_parser.py - Generic extraction utilities (7 methods)
+app/tools/size_test_input_extractor.py - SizeTest-specific extraction
+app/agents/tool_input_extraction_node.py - V2 graph node
+tests/test_query_parser.py - 59 tests
+tests/test_llm_route_planner_input_extraction.py - 12 tests
+tests/test_size_test_input_extractor.py - 16 tests
+tests/test_tool_input_extraction_node.py - 10 tests
+tests/test_tool_input_extraction_e2e.py - 8 tests
+docs/tool-input-extraction.md - Comprehensive guide
+docs/superpowers/plans/PHASE3_* - This plan (multiple files)
+
+FILES TO EDIT (8)
+=================
+
+app/agents/llm_route_planner.py - Enhance prompts, parse tool_inputs_hint
+app/agents/langgraph_workflow_v2.py - Integrate extraction node, add fallback
+app/agents/graph_state.py - Add extraction_log field
+app/schemas/response.py - Add extraction fields
+app/api/chat_v2.py - Pass extraction to response
+CLAUDE.md - Add extraction section
+
+SUCCESS CRITERIA
+================
+
+Functional:
+  ✓ All 4 tools execute end-to-end
+  ✓ No "Missing required field" errors on extractable queries
+  ✓ SizeTest gets 50%+ field extraction
+  ✓ API response includes extraction_log
+  ✓ Zero tool_inputs_hint={} in successful executions
+
+Quality:
+  ✓ All 115+ tests pass
+  ✓ >90% code coverage
+  ✓ Pure extraction functions (no side effects)
+  ✓ No technical debt
+
+Documentation:
+  ✓ Comprehensive guide in docs/tool-input-extraction.md
+  ✓ CLAUDE.md updated
+  ✓ Code comments for non-obvious logic
+
+GETTING STARTED
+===============
+
+1. Read PHASE3_IMPLEMENTATION_OVERVIEW.md (main context)
+2. Read PHASE3_SUMMARY.txt (executive summary)
+3. Read docs/superpowers/plans/SPRINT1_SPECIFICATION.txt (detailed spec)
+4. Start Sprint 1 with TDD: write tests first
+5. Each sprint has clear acceptance criteria
+
+SPRINT 1 DETAILS (QueryParser)
+==============================
+
+7 Static Methods (no state):
+
+1. extract_numbers() → List[float]
+   Handles: integers, decimals, thousands separators, scientific notation
+   Test cases: 10
+
+2. extract_currency_values() → Dict[str, List[float]]
+   Handles: HK$, USD, RMB with scale suffixes (m, bn, k)
+   Test cases: 10
+
+3. extract_percentages() → List[float]
+   Handles: "25%", "0.5 percent", "百分之二十五"
+   Test cases: 8
+
+4. extract_transaction_type() → Optional[str]
+   Returns: "acquisition", "disposal", or None
+   Test cases: 8
+
+5. extract_classification_tier() → Optional[str]
+   Returns: one of 5 classification tiers or None
+   Test cases: 8
+
+6. extract_rule_reference() → Optional[str]
+   Handles: "Rule 14.34", "14A.35", "Section 14.04"
+   Test cases: 10
+
+7. normalize_field_name() → str
+   Maps: "market cap" → "issuer_market_cap"
+   Test cases: 5
+
+Total: 59 tests
+
+Sprint 1 is foundation for all other sprints.
+
+DEPENDENCIES
+============
+
+Phase 3 depends on:
+  - Phase 2 complete (tool infrastructure)
+  - V2 graph stable
+
+Phase 3 enables:
+  - Phase 4: Chinese language support
+  - Phase 5: Advanced tool orchestration
+  - Phase 6: Multi-tool workflows
+
+QUESTIONS?
+==========
+
+Q: Why not just use LLM for everything?
+A: LLM can fail (unavailable, inconsistent). 3 layers provide redundancy.
+
+Q: Won't heuristic extraction be inaccurate?
+A: Yes, but better than 0% (current). Layer 1 handles 80%, 2-3 catch rest.
+
+Q: What about Chinese queries?
+A: Minimal support Phase 3. Phase 4 dedicated i18n work.
+
+Q: How much slower?
+A: <100ms per query (regex only, O(1) operations).
+
+---
+
+Ready for implementation.
+Start with Sprint 1.
+TDD: write tests first.
+

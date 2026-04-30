@@ -1,0 +1,180 @@
+{
+  "title": "Tool Infrastructure - Detailed Findings",
+  "date": "2026-04-29",
+  "questions": {
+    "a_tool_names": {
+      "question": "What tool names are already referenced in the codebase?",
+      "answer": {
+        "tools": [
+          {
+            "name": "size_test_calculator",
+            "purpose": "Size test calculations",
+            "hardcoded": true
+          },
+          {
+            "name": "rule_lookup",
+            "purpose": "Direct rule lookups",
+            "hardcoded": false
+          },
+          {
+            "name": "transaction_classifier",
+            "purpose": "Transaction classification",
+            "hardcoded": false
+          },
+          {
+            "name": "disclosure_checklist",
+            "purpose": "Disclosure requirements",
+            "hardcoded": false
+          }
+        ],
+        "issue": "Only size_test_calculator is hardcoded in fallback logic (llm_route_planner.py:137, langgraph_workflow_v2.py:84)",
+        "evidence": "Other 3 tools referenced in system prompt but never instantiated/executed"
+      }
+    },
+    "b_tooldecision_schema": {
+      "question": "What does the ToolDecision schema expect?",
+      "fields": {
+        "requires_tool": {
+          "type": "bool",
+          "default": false,
+          "description": "Whether tool invocation needed"
+        },
+        "tool_name": {
+          "type": "Optional[str]",
+          "default": null,
+          "enum": [
+            "size_test_calculator",
+            "rule_lookup",
+            "transaction_classifier",
+            "disclosure_checklist"
+          ]
+        },
+        "tool_mode": {
+          "type": "str",
+          "default": "none",
+          "enum": [
+            "none",
+            "tool_only",
+            "tool_plus_retrieval"
+          ]
+        },
+        "tool_inputs_hint": {
+          "type": "Dict[str, Any]",
+          "default": {},
+          "issue": "Always empty, never populated"
+        },
+        "tool_reason": {
+          "type": "Optional[str]",
+          "default": null
+        }
+      },
+      "tool_mode_semantics": {
+        "none": "No tool needed, use retrieval only",
+        "tool_only": "Use tool exclusively, skip retrieval",
+        "tool_plus_retrieval": "Run tool AND retrieval, merge results"
+      }
+    },
+    "c_basetool_gaps": {
+      "question": "Gap between current BaseTool and what Stage 2 needs",
+      "current_implementation": [
+        "name property",
+        "run() method"
+      ],
+      "current_lines": 14,
+      "gaps": [
+        {
+          "feature": "description",
+          "priority": "HIGH",
+          "reason": "Tool discovery"
+        },
+        {
+          "feature": "input_schema",
+          "priority": "HIGH",
+          "reason": "Input validation"
+        },
+        {
+          "feature": "output_schema",
+          "priority": "HIGH",
+          "reason": "Output standardization"
+        },
+        {
+          "feature": "validate_inputs()",
+          "priority": "HIGH",
+          "reason": "Pre-execution safety"
+        },
+        {
+          "feature": "get_metadata()",
+          "priority": "HIGH",
+          "reason": "Registry discovery"
+        },
+        {
+          "feature": "error_handling",
+          "priority": "MEDIUM",
+          "reason": "Prevent crashes"
+        },
+        {
+          "feature": "timeout_limits",
+          "priority": "MEDIUM",
+          "reason": "Resource management"
+        }
+      ]
+    },
+    "d_should_retry_route": {
+      "question": "Why is should_retry_route unused?",
+      "function_location": "langgraph_workflow_v2.py, lines 411-423",
+      "status": "DEFINED BUT UNUSED",
+      "reasons": [
+        "Function is defined correctly",
+        "Never registered in workflow edges",
+        "build_graph() does not use it",
+        "Current edge goes directly from route_validator to should_decompose",
+        "No conditional edge checks for should_retry/should_fallback",
+        "Route validation never triggers retry/fallback"
+      ],
+      "what_would_trigger": "RouteValidationResult flags (should_retry, should_fallback) - but never set to true",
+      "impact": "No retry mechanism when LLM routing fails, no fallback to heuristic"
+    }
+  },
+  "critical_findings": [
+    {
+      "number": 1,
+      "title": "tool_inputs_hint Never Populated",
+      "location": "schemas/planning.py, line 9",
+      "impact": "LLM hints are never used",
+      "status": "Pattern defined but not implemented",
+      "fix": "Update LLM prompt to generate hints, tool node to use them"
+    },
+    {
+      "number": 2,
+      "title": "Only size_test_calculator Instantiated",
+      "location": "llm_route_planner.py:137, langgraph_workflow_v2.py:84",
+      "impact": "Other 3 tools unreachable",
+      "status": "Hardcoded workaround, no registry",
+      "fix": "Build ToolRegistry, get_tool() method"
+    },
+    {
+      "number": 3,
+      "title": "should_retry_route Dead Code",
+      "location": "langgraph_workflow_v2.py, lines 411-423",
+      "impact": "No retry/fallback, reduces resilience",
+      "status": "Function written, graph not wired",
+      "fix": "Add conditional edges after route_validator"
+    },
+    {
+      "number": 4,
+      "title": "tool_mode Decisions Ignored",
+      "location": "Throughout workflow",
+      "impact": "tool_mode branching never happens",
+      "status": "Schema defined, no execution logic",
+      "fix": "Add tool execution node between route_validator and retriever"
+    },
+    {
+      "number": 5,
+      "title": "Missing Tool State Fields",
+      "location": "AgentState (graph_state.py)",
+      "impact": "Tool results can't propagate",
+      "status": "State incomplete for tool I/O",
+      "fix": "Add tool_inputs, tool_outputs, tool_execution_result fields"
+    }
+  ]
+}

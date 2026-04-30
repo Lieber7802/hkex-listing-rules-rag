@@ -1,0 +1,193 @@
+COMPREHENSIVE EXPLORATION FINDINGS
+HKEX Listing Rules RAG Tool Infrastructure
+
+QUESTION 1: LLM ROUTE PLANNER
+============================
+
+1.1 _build_prompt() - Very minimal (lines 91-96)
+- Takes user query
+- Asks for JSON routing decision
+- No tool context or guidance
+
+1.2 LLM Response Format - System prompt (lines 67-89)
+- Expected fields: query_type, intent, requires_tool, tool_name, tool_mode, etc.
+- Tools listed: size_test_calculator, rule_lookup, transaction_classifier, disclosure_checklist
+- KEY ISSUE: NO tool_inputs_hint field requested
+
+1.3 Does it parse tool_inputs_hint? 
+- NO. LLM schema does not request it.
+- tool_inputs_hint is never extracted.
+
+1.4 ToolDecision population (lines 108-114)
+- requires_tool, tool_name, tool_mode from LLM
+- tool_inputs_hint ALWAYS initialized as empty dict {}
+- CRITICAL GAP
+
+QUESTION 2: LANGGRAPH WORKFLOW
+==============================
+
+2.1 tool_executor_node reads tool_inputs_hint (line 500)
+- Reads from route_decision.tool_decision.tool_inputs_hint
+- Converts to tool_inputs dict
+
+2.2 What happens when empty?
+- Validation fails (lines 522-532)
+- "Missing required field" errors
+- Tool never executes
+- Error returned to user
+
+QUESTION 3: TOOLDECISION SCHEMA
+===============================
+
+3.1 Schema (planning.py lines 5-10)
+- requires_tool: bool
+- tool_name: Optional[str]
+- tool_mode: str (none/tool_only/tool_plus_retrieval)
+- tool_inputs_hint: Dict[str, Any]  <- ALWAYS EMPTY
+- tool_reason: Optional[str]
+
+3.2 tool_inputs_hint
+- Should contain: {"issuer_market_cap": 1000, "issuer_total_assets": 5000, ...}
+- Currently: always empty dict {}
+
+QUESTION 4: SIZE TEST CALCULATOR INPUTS
+======================================
+
+10 REQUIRED FIELDS:
+1. issuer_market_cap (number)
+2. issuer_total_assets (number)
+3. issuer_net_assets (number)
+4. issuer_annual_profit (number)
+5. issuer_shares_outstanding (number)
+6. transaction_consideration (number)
+7. acquired_assets (number)
+8. acquired_profit (number)
+9. acquired_net_assets (number)
+10. transaction_type (string: acquisition/disposal)
+
+Optional: consideration_shares (defaults to 0)
+
+QUESTION 5: PDF LOADING & EMBEDDINGS
+====================================
+
+PDF Loading (ingestion/loader.py lines 40-46)
+- CURRENT STATE: NOT IMPLEMENTED
+- Returns empty string for all PDFs
+- Logs warning
+
+Embedders (retrieval/embedder.py):
+Option 1: OllamaEmbedder - API endpoint, dimension 1024
+Option 2: SentenceTransformerEmbedder - local library
+
+Loaders:
+- TextLoader: .txt (WORKS)
+- MarkdownLoader: .md (WORKS)
+- PDFLoader: .pdf (EMPTY)
+
+QUESTION 6: API ENDPOINTS
+========================
+
+Framework: FastAPI (async)
+Endpoints: POST /chat, POST /v2/chat
+Execution: Synchronous within async endpoint
+Response: ChatResponse with complete planning trace
+
+V2 Response includes:
+- query_type, answer, citations, retrieved_chunks
+- route_decision, decomposition_plan (V2 only)
+- tool_calls, tool_results (V2 only)
+
+Error handling: HTTPException (503 if not ready, 500 if error)
+
+CRITICAL INFRASTRUCTURE GAP
+===========================
+
+System HAS:
+✓ Well-defined tool schemas
+✓ Tool registry with lookup
+✓ 4 specialized tools
+✓ Input validation
+✓ Error handling
+✓ Tool executor node
+✓ Tool results in API
+
+System LACKS:
+✗ LLM extraction of tool inputs
+✗ Heuristic extraction of tool inputs
+✗ tool_inputs_hint population mechanism
+✗ Fallback input sourcing
+✗ PDF loading
+
+Current Problem:
+- LLM chooses tool_name="size_test_calculator"
+- But tool_inputs_hint remains {}
+- Tool validation fails with "Missing required field..."
+- Tool never executes
+- All tools non-functional
+
+WHERE TO ADD EXTRACTION
+=======================
+
+Location 1: app/agents/llm_route_planner.py
+- Enhance _build_prompt() and system prompt
+- Request tool_inputs_hint in LLM response
+- Extract tool_inputs_hint in _parse_llm_response()
+
+Location 2: app/agents/langgraph_workflow_v2.py
+- Fallback extraction in heuristic_fallback_node() or tool_executor_node()
+
+Location 3: New utilities module
+- Query parsing for tool parameters
+- Numeric extraction from text
+- Fallback prompting for missing inputs
+
+AVAILABLE TOOLS
+===============
+
+1. SizeTestCalculatorTool
+   Name: size_test_calculator
+   Input: 10 required financial fields
+   Output: 5 ratios, classification, warnings
+
+2. TransactionClassifierTool
+   Name: transaction_classifier
+   Input: highest_ratio, transaction_type, is_connected
+   Output: Classification, rules, disclosure level
+
+3. DisclosureChecklistTool
+   Name: disclosure_checklist
+   Input: classification, is_connected, shareholder_vote_required
+   Output: Structured checklist by stage
+
+4. RuleLookupTool
+   Name: rule_lookup
+   Input: Rule references or keywords
+   Output: Rule details and requirements
+
+WORKFLOW ARCHITECTURE
+====================
+
+Entry: llm_route_planner
+
+Nodes:
+1. llm_route_planner
+2. route_validator
+3. should_retry_route
+4. heuristic_fallback
+5. decompose_router
+6. task_decomposer
+7. decomposition_validator
+8. tool_executor <- KEY NODE FOR TOOL INPUTS
+9. retriever
+10. coverage_checker
+11. evidence_selector
+12. reasoning
+13. answer_verifier
+
+Tool execution path:
+Query -> LLM routing -> tool_executor -> VALIDATION FAILS -> error
+
+What should happen:
+Query -> LLM routing -> LLM extraction of inputs -> tool_executor -> 
+VALIDATION PASSES -> tool executes -> result returned
+

@@ -1,0 +1,210 @@
+SPRINT 1: QueryParser Module — Detailed Specification
+
+Objective:
+Create a reusable utility module for extracting typed data from natural language queries.
+Pure regex + string operations, no LLM calls, no instance state.
+
+Duration: 2 hours
+Files to create: 2 (app/tools/query_parser.py + tests/test_query_parser.py)
+
+---
+
+FILE 1: app/tools/query_parser.py
+
+A single class with 7 static methods. No __init__, no state.
+
+Method 1: extract_numbers(text: str) -> List[float]
+
+Extract all numeric values, handling:
+- Integers: "100", "1000"
+- Decimals: "1.5", "0.25"
+- Thousands: "1,000,000", "1 000 000"
+- Scientific: "1e6", "2.5e-3"
+- Negative: "-100", "-1.5"
+
+Returns: Sorted, deduplicated list of floats
+
+Test cases (10):
+  1. "100 and 200" → [100.0, 200.0]
+  2. "1,000,000 or 2.5" → [1000000.0, 2.5]
+  3. "1 000 000 HK$" → [1000000.0]
+  4. "0.5% or 1.5%" → [0.5, 1.5]
+  5. "-100 to 200" → [-100.0, 200.0]
+  6. "1e6" → [1000000.0]
+  7. "no numbers" → []
+  8. "100, 100, 200" → [100.0, 200.0]
+  9. "1,234.56" → [1234.56]
+  10. Empty string → []
+
+Method 2: extract_currency_values(text: str) -> Dict[str, List[float]]
+
+Extract amounts with currency labels, converting to base units (HK$ millions).
+
+Currency types:
+  - HK$, HKD, HK Dollar (base, in millions)
+  - USD, US$ (×7.8 to HK$)
+  - RMB, CNY (×1.1 to HK$)
+
+Scale suffixes:
+  - m, million: ×1,000,000
+  - bn, billion: ×1,000,000,000
+  - k, thousand: ×1,000
+  - (none): assume already in millions
+
+Return structure:
+  {"hk_dollars": [...], "usd": [...], "rmb": [...], "raw_numbers": [...]}
+
+Test cases (10):
+  1. "HK$ 500 million" → hk_dollars: [500000000.0]
+  2. "USD 10 million" → usd: [78000000.0]
+  3. "100 million HK$" → hk_dollars: [100000000.0]
+  4. "1.5bn" → [1500000000.0]
+  5. "500k" → [500000.0]
+  6. "HK$ 1bn, USD 100m" → both currencies
+  7. "500" → raw_numbers: [500.0]
+  8. "RMB 100m" → rmb: [110000000.0]
+  9. "HK$m" → infer million
+  10. Empty → {}
+
+Method 3: extract_percentages(text: str) -> List[float]
+
+Extract percentage values as floats (25 not 0.25).
+
+Patterns:
+  - "25%", "0.5%"
+  - "25 percent", "0.5 percentage"
+  - Chinese: "百分之二十五" (25%)
+
+Test cases (8):
+  1. "25%" → [25.0]
+  2. "0.5 percent" → [0.5]
+  3. "99.9%" → [99.9]
+  4. "25% and 50%" → [25.0, 50.0]
+  5. "no percentages" → []
+  6. "100% increase" → [100.0]
+  7. "百分之二十五" → [25.0]
+  8. "0.1 percent" → [0.1]
+
+Method 4: extract_transaction_type(text: str) -> Optional[str]
+
+Detect "acquisition" or "disposal" keywords.
+
+Acquisition keywords:
+  - acquire, acquiring, acquisition
+  - buy, buying, purchase, purchasing
+  - takeover, consolidate
+
+Disposal keywords:
+  - dispose, disposal
+  - sell, selling, sold
+  - divest, divesting
+
+Return: "acquisition" or "disposal" or None
+
+Test cases (8):
+  1. "acquiring company" → "acquisition"
+  2. "sell shares" → "disposal"
+  3. "purchase assets" → "acquisition"
+  4. "divesting subsidiary" → "disposal"
+  5. "consolidation" → "acquisition"
+  6. "takeover bid" → "acquisition"
+  7. "reporting rules" → None
+  8. "not acquiring" → None
+
+Method 5: extract_classification_tier(text: str) -> Optional[str]
+
+Detect transaction classification tier.
+
+Valid outputs:
+  - "de_minimis"
+  - "share_transaction"
+  - "discloseable_transaction"
+  - "major_transaction"
+  - "very_substantial"
+
+Test cases (8):
+  1. "major transaction" → "major_transaction"
+  2. "very substantial" → "very_substantial"
+  3. "de minimis" → "de_minimis"
+  4. "discloseable transaction" → "discloseable_transaction"
+  5. "share transaction" → "share_transaction"
+  6. "no tier" → None
+  7. "majority" → None  (word boundary)
+  8. "This is major" → "major_transaction"
+
+Method 6: extract_rule_reference(text: str) -> Optional[str]
+
+Extract HKEX rule references.
+
+Formats:
+  - "Rule 14.34" → "14.34"
+  - "Rule 14A.35" → "14A.35"
+  - "14.34" → "14.34"
+  - "Section 14.04" → "14.04"
+
+Return first match normalized
+
+Test cases (10):
+  1. "Rule 14.34" → "14.34"
+  2. "Rule 14A.35" → "14A.35"
+  3. "14.04" → "14.04"
+  4. "Section 14.58" → "14.58"
+  5. "Multiple: Rule 14.34 and Rule 14.38" → "14.34"
+  6. "No rules" → None
+  7. "Chapter 14" → None
+  8. "14A.46" → "14A.46"
+  9. "规则14.34" → "14.34"
+  10. "rule 14.58a" → None
+
+Method 7: normalize_field_name(text: str) -> str
+
+Convert user input field names to schema field names.
+
+SizeTestCalculator field mappings:
+  - "market cap", "issuer cap" → "issuer_market_cap"
+  - "total assets", "issuer assets" → "issuer_total_assets"
+  - "net assets" → "issuer_net_assets"
+  - "profit", "earnings" → "issuer_annual_profit"
+  - "shares", "outstanding" → "issuer_shares_outstanding"
+  - "consideration", "amount" → "transaction_consideration"
+  - "acquired assets", "target assets" → "acquired_assets"
+  - "acquired profit", "target profit" → "acquired_profit"
+  - "acquired net" → "acquired_net_assets"
+  - "type", "transaction type" → "transaction_type"
+
+Test cases (5):
+  1. "issuer market cap" → "issuer_market_cap"
+  2. "transaction_consideration" → "transaction_consideration"
+  3. "ACQUIRED PROFIT" → "acquired_profit"
+  4. "market cap" → "issuer_market_cap"
+  5. "Transaction Consideration" → "transaction_consideration"
+
+---
+
+FILE 2: tests/test_query_parser.py
+
+Test classes (59 total tests):
+
+class TestExtractNumbers: (10 tests)
+class TestExtractCurrencyValues: (10 tests)
+class TestExtractPercentages: (8 tests)
+class TestExtractTransactionType: (8 tests)
+class TestExtractClassificationTier: (8 tests)
+class TestExtractRuleReference: (10 tests)
+class TestNormalizeFieldName: (5 tests)
+
+---
+
+Success Criteria:
+
+* All 59 tests pass
+* >90% code coverage
+* Pure functions (no state)
+* No external dependencies (only re, typing)
+* Handles edge cases gracefully
+* All operations <100ms for typical queries
+
+---
+
+Ready for implementation. Use TDD: write tests first, then implement.
+

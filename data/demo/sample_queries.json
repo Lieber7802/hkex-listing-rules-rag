@@ -1,0 +1,26 @@
+[
+  {
+    "id": "direct_1",
+    "query": "What is Rule 14A.35?",
+    "type": "direct",
+    "description": "Simple rule lookup"
+  },
+  {
+    "id": "direct_2",
+    "query": "What are the disclosure requirements for connected transactions?",
+    "type": "direct",
+    "description": "Single concept question"
+  },
+  {
+    "id": "multi_hop_1",
+    "query": "What are the disclosure requirements for connected transactions and how do they differ from notifiable transactions?",
+    "type": "multi_hop",
+    "description": "Multi-hop comparison question"
+  },
+  {
+    "id": "multi_hop_2",
+    "query": "Compare the size test thresholds for connected transactions versus notifiable transactions",
+    "type": "multi_hop",
+    "description": "Explicit comparison request"
+  }
+]

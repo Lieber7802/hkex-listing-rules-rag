@@ -1,0 +1,120 @@
+# PHASE 3: LLM-Based Tool Input Extraction — Executive Summary
+
+## Problem Statement
+
+The tool infrastructure (4 tools, ToolRegistry, tool_executor_node) is complete but NON-FUNCTIONAL because:
+
+1. LLMRoutePlanner._parse_llm_response() (line 112) sets: tool_inputs_hint = {}
+2. LLMRoutePlanner._heuristic_fallback() (line 139) sets: tool_inputs_hint = {}
+3. tool_executor_node receives empty inputs
+4. Tool validation fails: "Missing required field: issuer_market_cap" etc.
+5. NO TOOLS EVER EXECUTE
+
+Current consequence: All tool-based queries fail with validation errors.
+
+## Solution Architecture
+
+Three-layer extraction strategy:
+
+### Layer 1: LLM-Based (Primary)
+- Enhanced system prompt requests tool_inputs_hint field
+- LLM extracts numeric values, classifications from query text
+- Enable: Full tool functionality with natural language
+
+### Layer 2: Heuristic (Secondary)
+- QueryParser: extract numbers, currency, percentages, types
+- SizeTestInputExtractor: keyword matching + adjacent numbers
+- Benefit: Offline, no LLM needed
+
+### Layer 3: Recovery (Tertiary)
+- tool_executor_node attempts extraction on validation failure
+- Graceful degradation with user feedback
+- Maximize success rate
+
+## Implementation Plan: 6 Sprints
+
+Sprint 1: QueryParser module
+  - Extract numbers, currency, percentages, transaction types, rule references
+  - 7 static methods, no state
+  - 18 tests
+
+Sprint 2: LLM prompt enhancement
+  - Request tool_inputs_hint in system prompt
+  - Parse and extract tool_inputs_hint from LLM response
+  - Update _parse_llm_response() to handle tool_inputs_hint field
+  - 12 tests
+
+Sprint 3: Size test extractor
+  - Extract 10 financial fields from query
+  - Field keywords + adjacent number detection
+  - Confidence scoring for partial extraction
+  - 16 tests
+
+Sprint 4: Tool input extraction node
+  - New graph node: tool_input_extraction_node
+  - Insert between decompose_router → tool_executor
+  - Update AgentState: add extraction_log field
+  - 10 tests
+
+Sprint 5: Fallback integration
+  - Enhance tool_executor_node with recovery logic
+  - On validation failure, attempt extraction again
+  - Update response schema with extraction fields
+  - 8 tests
+
+Sprint 6: Testing + documentation
+  - End-to-end integration tests
+  - Create docs/tool-input-extraction.md
+  - Update CLAUDE.md
+  - 8 tests
+
+## Files to Create (10)
+- app/tools/query_parser.py
+- app/tools/size_test_input_extractor.py
+- app/agents/tool_input_extraction_node.py
+- tests/test_query_parser.py
+- tests/test_llm_route_planner_input_extraction.py
+- tests/test_size_test_input_extractor.py
+- tests/test_tool_input_extraction_node.py
+- tests/test_tool_input_extraction_e2e.py
+- docs/tool-input-extraction.md
+
+## Files to Edit (8)
+- app/agents/llm_route_planner.py (enhance prompts, parse tool_inputs_hint)
+- app/agents/langgraph_workflow_v2.py (integrate extraction node, fallback recovery)
+- app/agents/graph_state.py (add extraction_log field)
+- app/schemas/response.py (add extraction fields)
+- app/api/chat_v2.py (pass extraction to response)
+- CLAUDE.md (add extraction section)
+
+## Test Coverage
+- 50+ new tests across all sprints
+- Unit tests for each extraction method
+- Integration tests proving end-to-end tool execution
+- Edge cases: Chinese numerals, abbreviated units, missing fields
+
+## Success Criteria
+✅ All 4 tools execute end-to-end
+✅ No "Missing required field" errors on extractable queries
+✅ Size test ≥50% field extraction on typical queries
+✅ API includes extraction_log for transparency
+✅ All 50+ tests pass
+✅ Zero tool_inputs_hint={} in successful executions
+
+## Risk Mitigation
+- LLM inconsistency: Layer 2+3 heuristics provide fallback
+- Numeric edge cases: comprehensive test suite
+- Performance: All extraction is O(1) regex, no LLM calls in fallback
+- Chinese support: Phase 4 dedicated i18n work
+
+## Effort Estimate
+16-20 hours total
+- Sprint 1: 2 hours
+- Sprint 2: 1.5 hours
+- Sprint 3: 2.5 hours
+- Sprint 4: 2 hours
+- Sprint 5: 1.5 hours
+- Sprint 6: 2 hours
+
+Ready for implementation. Start with Sprint 1.
+
