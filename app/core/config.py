@@ -33,7 +33,13 @@ class Settings(BaseSettings):
     
     chunk_max_chars: int = Field(default=1500, description="Maximum characters per chunk")
     chunk_overlap_chars: int = Field(default=100, description="Character overlap for long sections")
-    
+
+    # Session / multi-turn conversation settings
+    session_ttl_minutes: int = Field(default=60, description="Session TTL in minutes before expiry")
+    session_max_turns: int = Field(default=50, description="Maximum turns to keep per session")
+    session_storage_dir: Path = Field(default=Path("data/sessions"), description="JSONL session storage directory")
+    session_history_window: int = Field(default=5, description="Number of recent Q&A pairs to inject into LLM context")
+
     log_level: str = Field(default="INFO", description="Logging level")
     
     class Config:
@@ -42,7 +48,7 @@ class Settings(BaseSettings):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        for dir_path in [self.data_dir, self.raw_dir, self.processed_dir, self.chunks_dir, self.indexes_dir, self.demo_dir]:
+        for dir_path in [self.data_dir, self.raw_dir, self.processed_dir, self.chunks_dir, self.indexes_dir, self.demo_dir, self.session_storage_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
 
 

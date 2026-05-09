@@ -30,3 +30,7 @@ class AgentState(TypedDict):
     route_retry_count: int
     tool_calls: Annotated[List[Dict[str, Any]], add]
     tool_results: Annotated[List[Dict[str, Any]], add]
+    # Multi-turn conversation fields
+    conversation_id: Optional[str]
+    chat_history: Optional[List[Dict[str, str]]]
+    original_query: Optional[str]

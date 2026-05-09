@@ -52,7 +52,7 @@ class StreamingOrchestrator:
     def is_ready(self) -> bool:
         return self.nodes.is_ready()
 
-    def stream_query(self, query: str, use_llm_planner: bool = True) -> Generator[Dict[str, Any], None, None]:
+    def stream_query(self, query: str, use_llm_planner: bool = True, conversation_id: Optional[str] = None, chat_history: Optional[list] = None) -> Generator[Dict[str, Any], None, None]:
         """Generator that yields SSE event dicts as the graph executes.
 
         Yields:
@@ -84,6 +84,9 @@ class StreamingOrchestrator:
             "route_retry_count": 0,
             "tool_calls": [],
             "tool_results": [],
+            "conversation_id": conversation_id,
+            "chat_history": chat_history,
+            "original_query": None,
         }
 
         tools_executed = 0

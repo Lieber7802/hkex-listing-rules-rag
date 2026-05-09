@@ -45,7 +45,9 @@ class ReasoningAgent:
         self,
         query: str,
         planner_output: PlannerOutput,
-        retrieval_results: List[RetrievalResult]
+        retrieval_results: List[RetrievalResult],
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        history_summary: Optional[str] = None,
     ) -> ReasoningOutput:
         if not retrieval_results:
             return ReasoningOutput(
@@ -56,11 +58,11 @@ class ReasoningAgent:
             )
         
         context = self._build_context(retrieval_results)
-        
+
         client = self._get_client()
-        
+
         if client is not None and self.llm_provider in ["openai", "deepseek"]:
-            answer = self._generate_with_llm(query, context, planner_output)
+            answer = self._generate_with_llm(query, context, planner_output, chat_history, history_summary)
         else:
             answer = self._generate_fallback(query, context, retrieval_results)
         
@@ -93,9 +95,9 @@ class ReasoningAgent:
         
         return "\n".join(context_parts)
     
-    def _generate_with_llm(self, query: str, context: str, planner_output: PlannerOutput) -> str:
+    def _generate_with_llm(self, query: str, context: str, planner_output: PlannerOutput, chat_history: Optional[List[Dict[str, str]]] = None, history_summary: Optional[str] = None) -> str:
         try:
-            system_prompt = """You are a compliance assistant for HKEX Listing Rules. 
+            system_prompt = """You are a compliance assistant for HKEX Listing Rules.
 Answer questions based ONLY on the provided context.
 Always cite the specific rule numbers when making statements.
 If the context does not contain sufficient information, state that clearly.
@@ -110,18 +112,29 @@ Query type: {planner_output.query_type}
 
 Please provide a clear, citation-grounded answer based on the context above."""
 
+            # Build messages with optional conversation history
+            messages = [{"role": "system", "content": system_prompt}]
+
+            # Inject history summary for long conversations
+            if history_summary:
+                messages.append({"role": "system", "content": f"Earlier conversation context: {history_summary}"})
+
+            # Inject recent conversation history
+            if chat_history:
+                messages.extend(chat_history)
+
+            # Current user query with retrieval context
+            messages.append({"role": "user", "content": user_prompt})
+
             response = self._client.chat.completions.create(
                 model=self.llm_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
+                messages=messages,
                 max_tokens=500,
                 temperature=0.3
             )
-            
+
             return response.choices[0].message.content
-        
+
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
             return self._generate_fallback(query, context, [])

@@ -4,6 +4,7 @@ from typing import List, Optional, Dict
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="User query text", min_length=1)
+    conversation_id: Optional[str] = Field(default=None, description="Conversation session ID. If None, a new session is created.")
 
 
 class PlannerOutput(BaseModel):

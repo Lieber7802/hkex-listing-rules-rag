@@ -80,3 +80,17 @@ local.db
 # Temporary files
 tmp/
 temp/
+
+# Session data
+data/sessions/
+
+# Development notes and analysis documents
+MULTI_TURN_EXPLORATION_FINDINGS.txt
+ORCHESTRATION_ANALYSIS.txt
+
+# Claude local settings
+.claude/settings.local.json
+
+# Frontend build artifacts and dependencies
+frontend/node_modules/
+frontend/dist/

@@ -22,6 +22,8 @@ class ChatResponse(BaseModel):
     decomposition_validation: Optional[Dict[str, Any]] = Field(default=None, description="Decomposition validation result")
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list, description="Tool calls made during processing")
     tool_results: List[Dict[str, Any]] = Field(default_factory=list, description="Tool execution results")
+    conversation_id: Optional[str] = Field(default=None, description="Conversation session ID for multi-turn")
+    turn_number: Optional[int] = Field(default=None, description="Current turn number in conversation (1-indexed)")
 
 
 class HealthResponse(BaseModel):

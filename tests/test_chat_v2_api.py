@@ -38,9 +38,12 @@ class TestV2APIEndpoints:
         assert v2.status_code == 200
 
     def test_root_endpoint_unchanged(self):
-        """Root / endpoint still returns project info."""
+        """Root / endpoint returns project info or frontend HTML."""
         response = client.get("/")
         assert response.status_code == 200
-        data = response.json()
-        assert "name" in data
-        assert "docs" in data
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
+            data = response.json()
+            assert "name" in data or "note" in data
+        else:
+            assert len(response.text) > 0

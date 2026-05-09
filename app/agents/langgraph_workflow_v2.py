@@ -49,10 +49,11 @@ class GraphNodes:
 
         # Tool registry
         self.tool_registry = ToolRegistry()
-        self._register_tools()
 
         if self.index_store is None and Path(self.index_path).exists():
             self._load_index_store()
+
+        self._register_tools()
     
     def _load_index_store(self):
         try:
@@ -185,23 +186,40 @@ def retriever_node(nodes: GraphNodes):
                 "error": "Index not loaded",
                 "retrieved_chunks": []
             }
-        
+
         query = state["query"]
+        chat_history = state.get("chat_history")
         route_dict = state.get("route_decision")
         decomp_dict = state.get("decomposition_plan")
-        
+
+        # Contextual query rewriting for multi-turn (resolve coreferences)
+        original_query = None
+        if chat_history:
+            from app.agents.contextual_query_rewriter import ContextualQueryRewriter
+            from app.models.conversation import ConversationTurn
+
+            rewriter = ContextualQueryRewriter()
+            history_turns = [
+                ConversationTurn(role=h["role"], content=h["content"])
+                for h in chat_history
+            ]
+            rewritten = rewriter.rewrite(query, history_turns)
+            if rewritten != query:
+                original_query = query
+                query = rewritten
+
         results = []
-        
+
         if decomp_dict:
             from app.schemas.planning import DecompositionPlan
             decomp = DecompositionPlan(**decomp_dict)
             queries = [task.query for task in decomp.subtasks if task.type == "retrieval"]
             if queries:
                 results = nodes.retriever.retrieve_for_sub_queries(queries)
-        
+
         if not results:
             results = nodes.retriever.retrieve(query)
-        
+
         chunks_data = [
             {
                 "chunk_id": r.chunk_id,
@@ -215,13 +233,15 @@ def retriever_node(nodes: GraphNodes):
             }
             for r in results[:10]
         ]
-        
+
         logger.info(f"Retriever node: retrieved {len(chunks_data)} chunks")
-        
-        return {
-            "retrieved_chunks": chunks_data
-        }
-    
+
+        result = {"retrieved_chunks": chunks_data}
+        if original_query:
+            result["original_query"] = original_query
+            result["query"] = query  # Update query for downstream nodes
+        return result
+
     return node
 
 
@@ -379,7 +399,8 @@ def reasoning_node(nodes: GraphNodes):
         reasoning_output = nodes.reasoning_agent.reason(
             query=query,
             planner_output=planner_output,
-            retrieval_results=results
+            retrieval_results=results,
+            chat_history=state.get("chat_history"),
         )
         
         citations = nodes.citation_formatter.format_citations(
@@ -739,7 +760,7 @@ class LangGraphOrchestratorV2:
     def is_ready(self) -> bool:
         return self.nodes.is_ready()
     
-    def process_query(self, query: str, use_llm_planner: bool = True) -> Dict[str, Any]:
+    def process_query(self, query: str, use_llm_planner: bool = True, conversation_id: Optional[str] = None, chat_history: Optional[list] = None) -> Dict[str, Any]:
         initial_state: AgentState = {
             "query": query,
             "planner_output": None,
@@ -764,10 +785,13 @@ class LangGraphOrchestratorV2:
             "route_retry_count": 0,
             "tool_calls": [],
             "tool_results": [],
+            "conversation_id": conversation_id,
+            "chat_history": chat_history,
+            "original_query": None,
         }
-        
+
         final_state = self.graph.invoke(initial_state)
-        
+
         return {
             "query_type": final_state.get("query_type", "unknown"),
             "answer": final_state.get("answer", "No answer generated."),
@@ -785,4 +809,5 @@ class LangGraphOrchestratorV2:
             "retrieval_rounds": final_state.get("retrieval_rounds", []),
             "tool_calls": final_state.get("tool_calls", []),
             "tool_results": final_state.get("tool_results", []),
+            "conversation_id": final_state.get("conversation_id"),
         }
