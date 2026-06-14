@@ -1,6 +1,7 @@
 import re
 from typing import List, Tuple, Optional
 from app.core.logger import logger
+from app.ingestion.chunker import StructureBlock
 
 
 class TextCleaner:
@@ -35,7 +36,7 @@ class TextCleaner:
         if not text:
             return ""
         
-        preserved = self._extract_preserved(text)
+        text, preserved = self._extract_preserve(text)
         
         for pattern in self.default_remove_patterns:
             text = re.sub(pattern, '\n', text)
@@ -51,13 +52,16 @@ class TextCleaner:
         
         return text
     
-    def _extract_preserved(self, text: str) -> List[Tuple[str, str]]:
-        preserved = []
+    def _extract_preserve(self, text: str) -> Tuple[str, List[Tuple[str, str]]]:
+        preserved: List[Tuple[str, str]] = []
         for pattern in self.preserve_patterns:
-            matches = re.finditer(pattern, text)
-            for match in matches:
-                preserved.append((match.group(0), f"__PRESERVED_{len(preserved)}__"))
-        return preserved
+            def _replace(match, p=preserved):
+                original = match.group(0)
+                placeholder = f"__PRESERVED_{len(p)}__"
+                p.append((original, placeholder))
+                return placeholder
+            text = re.sub(pattern, _replace, text)
+        return text, preserved
     
     def _restore_preserved(self, text: str, preserved: List[Tuple[str, str]]) -> str:
         for original, placeholder in preserved:
@@ -71,35 +75,47 @@ class TextCleaner:
         text = re.sub(r'\n{3,}', '\n\n', text)
         return text
     
-    def extract_structure_markers(self, text: str) -> List[dict]:
-        markers = []
-        
+    def extract_structure_markers(self, text: str) -> List[StructureBlock]:
+        markers: List[StructureBlock] = []
+
         for match in self.chapter_pattern.finditer(text):
-            markers.append({
-                'type': 'chapter',
-                'number': match.group(1),
-                'position': match.start(),
-                'text': match.group(0)
-            })
-        
+            markers.append(StructureBlock(
+                block_type='chapter',
+                number=match.group(1),
+                title=None,
+                start_pos=match.start(),
+                end_pos=match.end(),
+                text=match.group(0),
+                parent_chapter=None,
+                parent_section=None,
+            ))
+
         for match in self.section_pattern.finditer(text):
-            markers.append({
-                'type': 'section',
-                'number': match.group(1),
-                'position': match.start(),
-                'text': match.group(0)
-            })
-        
+            markers.append(StructureBlock(
+                block_type='section',
+                number=match.group(1),
+                title=None,
+                start_pos=match.start(),
+                end_pos=match.end(),
+                text=match.group(0),
+                parent_chapter=None,
+                parent_section=None,
+            ))
+
         for match in self.rule_number_pattern.finditer(text):
-            markers.append({
-                'type': 'rule',
-                'number': match.group(1),
-                'position': match.start(),
-                'text': match.group(0)
-            })
-        
-        markers.sort(key=lambda x: x['position'])
-        
+            markers.append(StructureBlock(
+                block_type='rule',
+                number=match.group(1),
+                title=None,
+                start_pos=match.start(),
+                end_pos=match.end(),
+                text=match.group(0),
+                parent_chapter=None,
+                parent_section=None,
+            ))
+
+        markers.sort(key=lambda x: x.start_pos)
+
         return markers
 
 

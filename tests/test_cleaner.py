@@ -1,5 +1,6 @@
 import pytest
 from app.ingestion.cleaner import TextCleaner, clean_document_text
+from app.ingestion.chunker import StructureBlock
 
 
 class TestTextCleaner:
@@ -43,17 +44,40 @@ class TestTextCleaner:
         cleaner = TextCleaner()
         text = "Chapter 14\nSome content\nChapter 14A\nMore content"
         markers = cleaner.extract_structure_markers(text)
-        chapter_markers = [m for m in markers if m['type'] == 'chapter']
+        chapter_markers = [m for m in markers if m.block_type == 'chapter']
         assert len(chapter_markers) == 2
-        assert chapter_markers[0]['number'] == '14'
-        assert chapter_markers[1]['number'] == '14A'
+        assert chapter_markers[0].number == '14'
+        assert chapter_markers[1].number == '14A'
     
     def test_extract_structure_markers_finds_rules(self):
         cleaner = TextCleaner()
         text = "Rule 14.26 states...\n14A.35 requires..."
         markers = cleaner.extract_structure_markers(text)
-        rule_markers = [m for m in markers if m['type'] == 'rule']
+        rule_markers = [m for m in markers if m.block_type == 'rule']
         assert len(rule_markers) >= 2
+    
+    def test_extract_structure_markers_returns_structure_blocks(self):
+        cleaner = TextCleaner()
+        text = "Chapter 14A states Rule 14A.35. Section 14A.1 explains."
+        markers = cleaner.extract_structure_markers(text)
+
+        assert all(isinstance(m, StructureBlock) for m in markers)
+        assert len(markers) > 0
+
+        # First marker should be the chapter marker at position 0
+        chapter = markers[0]
+        assert chapter.block_type == 'chapter'
+        assert chapter.number == '14A'
+        assert chapter.text == 'Chapter 14A'
+        assert chapter.start_pos < chapter.end_pos
+        assert chapter.title is None
+
+        # Verify rule and section markers are also present and correctly typed
+        rule_markers = [m for m in markers if m.block_type == 'rule']
+        section_markers = [m for m in markers if m.block_type == 'section']
+        assert len(rule_markers) >= 1
+        assert len(section_markers) == 1
+        assert section_markers[0].text.startswith('Section 14')
     
     def test_clean_document_text_preserves_numbering(self):
         text = "Rule  14A.35   requires   disclosure.\n\n\n\nSee also Rule 14.26."
