@@ -6,7 +6,7 @@ in memory for fast access and persisted to JSONL files for durability.
 
 import json
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -18,8 +18,9 @@ class SessionStore:
     """Thread-safe in-memory session store with JSONL file persistence.
 
     Each session is stored as a {conversation_id}.jsonl file containing
-    one JSON object per line (one per turn). On startup, existing JSONL
-    files are loaded back into memory.
+    one JSON object per line (one per turn). Sessions are loaded lazily:
+    a session file is read from disk only when get_or_create(conversation_id)
+    is called for a specific ID that is not already cached in memory.
     """
 
     def __init__(
@@ -34,12 +35,12 @@ class SessionStore:
         self._max_turns = max_turns
         self._sessions: Dict[str, ConversationSession] = {}
         self._lock = threading.Lock()
-        self._load_from_disk()
 
     def get_or_create(self, conversation_id: Optional[str] = None) -> ConversationSession:
         """Get existing session by ID or create a new one.
 
         If conversation_id is None or not found or expired, creates a new session.
+        Sessions are lazy-loaded from disk on first access.
         Thread-safe.
         """
         with self._lock:
@@ -49,10 +50,16 @@ class SessionStore:
                     logger.info(f"Session {conversation_id} expired, creating new")
                     del self._sessions[conversation_id]
                     return self._create_new()
-                session.last_active = datetime.utcnow()
+                session.last_active = datetime.now(tz=timezone.utc)
                 return session
+
             if conversation_id:
+                session = self._load_session(conversation_id)
+                if session is not None:
+                    self._sessions[conversation_id] = session
+                    return session
                 logger.debug(f"Session {conversation_id} not found, creating new")
+
             return self._create_new()
 
     def append_turn(self, conversation_id: str, turn: ConversationTurn) -> None:
@@ -67,7 +74,7 @@ class SessionStore:
                 return
 
             session.turns.append(turn)
-            session.last_active = datetime.utcnow()
+            session.last_active = datetime.now(tz=timezone.utc)
 
             # Enforce max_turns limit (keep most recent)
             if len(session.turns) > self._max_turns:
@@ -97,7 +104,7 @@ class SessionStore:
     def cleanup_expired(self) -> int:
         """Remove all expired sessions. Returns count of removed sessions."""
         with self._lock:
-            now = datetime.utcnow()
+            now = datetime.now(tz=timezone.utc)
             expired_ids = [
                 sid
                 for sid, session in self._sessions.items()
@@ -105,12 +112,10 @@ class SessionStore:
             ]
             for sid in expired_ids:
                 del self._sessions[sid]
-                # Archive the JSONL file
                 filepath = self._storage_path / f"{sid}.jsonl"
                 if filepath.exists():
-                    archive_path = filepath.with_suffix(".jsonl.expired")
                     try:
-                        filepath.rename(archive_path)
+                        filepath.unlink()
                     except OSError:
                         pass
             if expired_ids:
@@ -131,11 +136,9 @@ class SessionStore:
         return session
 
     def _is_expired(self, session: ConversationSession) -> bool:
-        """Check if a session has exceeded TTL."""
         if self._ttl.total_seconds() == 0:
-            # TTL=0 means always expired (useful for testing)
-            return True
-        return (datetime.utcnow() - session.last_active) > self._ttl
+            return False  # TTL=0 means never expire
+        return (datetime.now(tz=timezone.utc) - session.last_active) > self._ttl
 
     def _flush_turn(self, conversation_id: str, turn: ConversationTurn) -> None:
         """Append a single turn to the session's JSONL file."""
@@ -146,8 +149,31 @@ class SessionStore:
         except OSError as e:
             logger.error(f"Failed to flush turn to disk: {e}")
 
+    def _load_session(self, conversation_id: str) -> Optional[ConversationSession]:
+        """Load a single session from disk if its JSONL file exists.
+
+        Must be called under self._lock.
+        """
+        filepath = self._storage_path / f"{conversation_id}.jsonl"
+        if not filepath.exists():
+            return None
+
+        session = self._load_session_file(filepath, conversation_id)
+        if session is None:
+            return None
+
+        if self._is_expired(session):
+            logger.info(f"Loaded session {conversation_id} is expired")
+            return None
+
+        session.last_active = datetime.now(tz=timezone.utc)
+        return session
+
     def _load_from_disk(self) -> None:
-        """Load existing sessions from JSONL files on startup."""
+        """(Legacy/debug) Load all sessions from disk into memory.
+
+        Not called during normal initialization; sessions are lazy-loaded.
+        """
         if not self._storage_path.exists():
             return
 

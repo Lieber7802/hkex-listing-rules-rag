@@ -3,7 +3,7 @@
 import json
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 import pytest
@@ -165,8 +165,9 @@ class TestSessionStore:
         session = store.get_or_create(None)
         cid = session.conversation_id
 
-        # Force expiry by manipulating last_active
-        store._sessions[cid].last_active = datetime.utcnow() - timedelta(minutes=1)
+        # TTL=0 means never expire — manually force expiry by changing last_active
+        store._sessions[cid].last_active = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        store._ttl = timedelta(minutes=60)  # Override TTL check
 
         new_session = store.get_or_create(cid)
         assert new_session.conversation_id != cid
@@ -178,13 +179,10 @@ class TestSessionStore:
         s1 = store.get_or_create(None)
         s2 = store.get_or_create(None)
 
-        # Force expire both
-        store._sessions[s1.conversation_id].last_active = datetime.utcnow() - timedelta(
-            minutes=1
-        )
-        store._sessions[s2.conversation_id].last_active = datetime.utcnow() - timedelta(
-            minutes=1
-        )
+        # Force expire both by overriding last_active and TTL
+        store._sessions[s1.conversation_id].last_active = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        store._sessions[s2.conversation_id].last_active = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        store._ttl = timedelta(minutes=60)
 
         removed = store.cleanup_expired()
         assert removed == 2
@@ -210,7 +208,7 @@ class TestSessionStore:
         # Pre-write a JSONL file with recent timestamps
         cid = "test-session-123"
         filepath = tmp_path / f"{cid}.jsonl"
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(tz=timezone.utc).isoformat()
         turns = [
             {"role": "user", "content": "Q1", "timestamp": now},
             {"role": "assistant", "content": "A1", "timestamp": now},
@@ -224,6 +222,33 @@ class TestSessionStore:
         assert session.conversation_id == cid
         assert len(session.turns) == 2
         assert session.turns[0].content == "Q1"
+
+    def test_lazy_load_only_loads_requested_session(self, tmp_path):
+        from app.services.session_store import SessionStore
+
+        session_a_id = "session-a"
+        session_b_id = "session-b"
+
+        file_a = tmp_path / f"{session_a_id}.jsonl"
+        file_b = tmp_path / f"{session_b_id}.jsonl"
+
+        turn_a = ConversationTurn(role="user", content="hello A")
+        turn_b = ConversationTurn(role="user", content="hello B")
+
+        file_a.write_text(turn_a.model_dump_json() + "\n", encoding="utf-8")
+        file_b.write_text(turn_b.model_dump_json() + "\n", encoding="utf-8")
+
+        store = SessionStore(storage_path=tmp_path)
+        assert len(store._sessions) == 0  # no eager loading
+
+        session = store.get_or_create(session_a_id)
+        assert session.conversation_id == session_a_id
+        assert len(session.turns) == 1
+        assert session.turns[0].content == "hello A"
+        assert len(store._sessions) == 1
+
+        # session-b should still not be loaded
+        assert session_b_id not in store._sessions
 
     def test_thread_safety_concurrent_append(self, store):
         session = store.get_or_create(None)
