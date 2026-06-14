@@ -19,18 +19,9 @@ class BaseLoader(ABC):
         pass
 
 
-class TextLoader(BaseLoader):
+class TextFileLoader(BaseLoader):
     def can_load(self, file_path: Path) -> bool:
-        return file_path.suffix.lower() in [".txt"]
-    
-    def load(self, file_path: Path) -> str:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
-
-
-class MarkdownLoader(BaseLoader):
-    def can_load(self, file_path: Path) -> bool:
-        return file_path.suffix.lower() in [".md", ".markdown"]
+        return file_path.suffix.lower() in [".txt", ".md", ".markdown"]
     
     def load(self, file_path: Path) -> str:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -53,18 +44,15 @@ class PDFLoader(BaseLoader):
         try:
             import fitz  # pymupdf
         except ImportError:
-            logger.error("pymupdf not installed. Run: pip install pymupdf")
-            return ""
+            raise RuntimeError("pymupdf not installed. Run: pip install pymupdf")
 
         if not file_path.exists():
-            logger.error(f"PDF file not found: {file_path}")
-            return ""
+            raise FileNotFoundError(f"PDF file not found: {file_path}")
 
         try:
             doc = fitz.open(str(file_path))
         except Exception as e:
-            logger.error(f"Failed to open PDF {file_path}: {e}")
-            return ""
+            raise RuntimeError(f"Failed to open PDF {file_path}: {e}")
 
         pages_text = []
 
@@ -94,8 +82,7 @@ class PDFLoader(BaseLoader):
 class DocumentLoader:
     def __init__(self):
         self.loaders: List[BaseLoader] = [
-            TextLoader(),
-            MarkdownLoader(),
+            TextFileLoader(),
             PDFLoader(),
         ]
     
@@ -116,7 +103,11 @@ class DocumentLoader:
             logger.error(f"No loader found for file type: {file_path.suffix}")
             return None
         
-        raw_text = loader.load(file_path)
+        try:
+            raw_text = loader.load(file_path)
+        except Exception as e:
+            logger.error(f"Failed to load {file_path}: {e}")
+            return None
         
         if document_id is None:
             document_id = file_path.stem
@@ -158,10 +149,8 @@ def save_document(document: Document, output_dir: Path) -> Path:
     
     output_path = output_dir / f"{document.document_id}.json"
     
-    doc_dict = document.model_dump()
-    if doc_dict["metadata"]["imported_at"] is not None:
-        doc_dict["metadata"]["imported_at"] = doc_dict["metadata"]["imported_at"].isoformat()
-    
+    doc_dict = document.model_dump(mode='json')
+
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(doc_dict, f, ensure_ascii=False, indent=2)
     
