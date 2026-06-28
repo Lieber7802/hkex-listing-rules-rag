@@ -1,5 +1,6 @@
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from app.schemas.document import Chunk
@@ -30,8 +31,6 @@ class HybridRetriever:
         self,
         index_store: IndexStore,
         embedder: Optional[BaseEmbedder] = None,
-        bm25_weight: Optional[float] = None,
-        dense_weight: Optional[float] = None,
         top_k_bm25: Optional[int] = None,
         top_k_dense: Optional[int] = None,
         top_k_final: Optional[int] = None,
@@ -39,15 +38,10 @@ class HybridRetriever:
     ):
         self.index_store = index_store
         self.embedder = embedder or get_embedder()
-
-        # Legacy weight params kept for backward compatibility but no longer
-        # used in the fusion step (RRF is rank-based, not score-based).
-        self.bm25_weight = bm25_weight or settings.bm25_weight
-        self.dense_weight = dense_weight or settings.dense_weight
         self.top_k_bm25 = top_k_bm25 or settings.retrieval_top_k_bm25
         self.top_k_dense = top_k_dense or settings.retrieval_top_k_dense
         self.top_k_final = top_k_final or settings.retrieval_top_k_final
-        self.rrf_k = rrf_k if rrf_k is not None else getattr(settings, "rrf_k", 60)
+        self.rrf_k = rrf_k if rrf_k is not None else getattr(settings, "rrf_k", 20)
 
     def _normalize_scores(self, scores: List[Tuple[str, float]]) -> Dict[str, float]:
         """Min-max normalize raw scores to [0, 1].
@@ -118,8 +112,11 @@ class HybridRetriever:
         return fused
 
     def retrieve(self, query: str) -> List[RetrievalResult]:
-        bm25_results = self._bm25_retrieve(query)
-        dense_results = self._dense_retrieve(query)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            bm25_future = executor.submit(self._bm25_retrieve, query)
+            dense_future = executor.submit(self._dense_retrieve, query)
+            bm25_results = bm25_future.result()
+            dense_results = dense_future.result()
 
         fused_scores = self._rrf_fuse(bm25_results, dense_results)
 
@@ -159,10 +156,11 @@ class HybridRetriever:
 
     def retrieve_for_sub_queries(self, sub_queries: List[str]) -> List[RetrievalResult]:
         all_results: Dict[str, RetrievalResult] = {}
+        per_query_min = max(3, self.top_k_final // max(len(sub_queries), 1))
 
         for sub_query in sub_queries:
             results = self.retrieve(sub_query)
-            for result in results:
+            for result in results[:per_query_min + 2]:
                 if result.chunk_id not in all_results or result.score > all_results[result.chunk_id].score:
                     all_results[result.chunk_id] = result
 

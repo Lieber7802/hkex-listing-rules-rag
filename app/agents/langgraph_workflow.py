@@ -95,7 +95,9 @@ def retriever_node(nodes: GraphNodes) -> callable:
                 "chapter": r.chunk.chapter,
                 "source_path": r.chunk.source_path,
                 "text": r.chunk.text,
-                "score": r.score
+                "score": r.score,
+                "bm25_score": getattr(r, "bm25_score", r.score),
+                "dense_score": getattr(r, "dense_score", r.score),
             }
             for r in results[:10]
         ]

@@ -135,6 +135,11 @@ class DocumentLoader:
 
         for file_path in dir_path.rglob("*"):
             if file_path.is_file():
+                relative_parts = file_path.relative_to(dir_path).parts
+                if any(part.startswith((".", "_")) for part in relative_parts[:-1]):
+                    continue
+                if self.get_loader(file_path) is None:
+                    continue
                 doc = self.load_document(file_path)
                 if doc is not None:
                     documents.append(doc)

@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.ingestion.loader import save_document, load_document_from_json
+from app.ingestion.loader import DocumentLoader, save_document, load_document_from_json
 from app.schemas.document import Document, DocumentMetadata
 
 
@@ -74,3 +74,19 @@ def test_load_document_from_json_backwards_compatible_with_isoformat(tmp_path):
     restored = load_document_from_json(file_path)
     assert restored.document_id == "legacy-doc"
     assert restored.metadata.imported_at == datetime(2024, 1, 15, 8, 30, 0)
+
+
+def test_load_documents_skips_internal_manifest_directories(tmp_path):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    (raw_dir / "normal.md").write_text("actual source document", encoding="utf-8")
+
+    manifest_dir = raw_dir / "_download_manifests"
+    manifest_dir.mkdir()
+    (manifest_dir / "audit.md").write_text("internal audit report", encoding="utf-8")
+
+    docs = DocumentLoader().load_documents_from_directory(raw_dir)
+
+    assert len(docs) == 1
+    assert docs[0].document_id == "normal"
+    assert docs[0].raw_text == "actual source document"

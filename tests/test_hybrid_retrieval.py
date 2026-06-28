@@ -209,7 +209,7 @@ class TestHybridRetriever:
         index_store.build_indexes(chunks, embeddings)
 
         retriever = HybridRetriever(index_store)
-        assert retriever.rrf_k == 60
+        assert retriever.rrf_k == 20
 
     def test_retrieve_returns_results(self):
         chunks = [

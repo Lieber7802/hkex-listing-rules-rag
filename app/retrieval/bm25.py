@@ -20,12 +20,14 @@ class BM25Index:
         self.doc_len: List[int] = []
         self.doc_ids: List[str] = []
         self.doc_texts: List[str] = []
-    
+        self.tokenized_corpus: List[List[str]] = []
+
     def _tokenize(self, text: str) -> List[str]:
-        text = text.lower()
-        tokens = []
-        current_token = []
-        for char in text:
+        text_lower = text.lower()
+        tokens: List[str] = []
+
+        current_token: List[str] = []
+        for char in text_lower:
             if char.isalnum():
                 current_token.append(char)
             else:
@@ -34,54 +36,68 @@ class BM25Index:
                     current_token = []
         if current_token:
             tokens.append(''.join(current_token))
-        return tokens
-    
+
+        # Chinese character bigrams for CJK text
+        cjk_tokens: List[str] = []
+        cjk_buffer: List[str] = []
+        for char in text:
+            if '\u4e00' <= char <= '\u9fff':
+                cjk_buffer.append(char)
+            else:
+                if len(cjk_buffer) >= 2:
+                    for i in range(len(cjk_buffer) - 1):
+                        cjk_tokens.append(cjk_buffer[i] + cjk_buffer[i + 1])
+                cjk_buffer = []
+        if len(cjk_buffer) >= 2:
+            for i in range(len(cjk_buffer) - 1):
+                cjk_tokens.append(cjk_buffer[i] + cjk_buffer[i + 1])
+
+        return tokens + cjk_tokens
+
     def fit(self, chunks: List[Chunk]):
         self.doc_ids = [chunk.chunk_id for chunk in chunks]
         self.doc_texts = [chunk.text for chunk in chunks]
-        
-        tokenized_corpus = [self._tokenize(chunk.text) for chunk in chunks]
-        
-        self.corpus_size = len(tokenized_corpus)
-        self.doc_len = [len(doc) for doc in tokenized_corpus]
+
+        self.tokenized_corpus = [self._tokenize(chunk.text) for chunk in chunks]
+
+        self.corpus_size = len(self.tokenized_corpus)
+        self.doc_len = [len(doc) for doc in self.tokenized_corpus]
         self.avgdl = sum(self.doc_len) / self.corpus_size if self.corpus_size > 0 else 0
-        
+
         df: Dict[str, int] = {}
-        for doc in tokenized_corpus:
+        for doc in self.tokenized_corpus:
             seen = set()
             for word in doc:
                 if word not in seen:
                     df[word] = df.get(word, 0) + 1
                     seen.add(word)
         self.doc_freqs = df
-        
+
         for word, freq in self.doc_freqs.items():
             self.idf[word] = np.log((self.corpus_size - freq + 0.5) / (freq + 0.5) + 1)
-        
+
         logger.info(f"Built BM25 index for {self.corpus_size} documents")
     
     def get_scores(self, query: str) -> np.ndarray:
         query_tokens = self._tokenize(query)
         scores = np.zeros(self.corpus_size)
-        
-        tokenized_corpus = [self._tokenize(text) for text in self.doc_texts]
-        
-        for i, doc in enumerate(tokenized_corpus):
+
+        for i, doc_tokens in enumerate(self.tokenized_corpus):
             score = 0.0
             doc_len = self.doc_len[i]
             for q_token in query_tokens:
                 if q_token not in self.idf:
                     continue
-                
-                tf = doc.count(q_token)
+
+                tf = doc_tokens.count(q_token)
                 idf = self.idf[q_token]
-                
+
                 numerator = tf * (self.k1 + 1)
                 denominator = tf + self.k1 * (1 - self.b + self.b * doc_len / self.avgdl)
                 score += idf * numerator / denominator
-            
+
             scores[i] = score
-        
+
         return scores
     
     def search(self, query: str, top_k: int = 10) -> List[Tuple[str, float]]:
@@ -105,7 +121,8 @@ class BM25Index:
             'idf': self.idf,
             'doc_len': self.doc_len,
             'doc_ids': self.doc_ids,
-            'doc_texts': self.doc_texts
+            'doc_texts': self.doc_texts,
+            'tokenized_corpus': self.tokenized_corpus,
         }
         
         with open(path / 'bm25_index.pkl', 'wb') as f:
@@ -128,6 +145,7 @@ class BM25Index:
         index.doc_len = data['doc_len']
         index.doc_ids = data['doc_ids']
         index.doc_texts = data['doc_texts']
+        index.tokenized_corpus = data.get('tokenized_corpus', [])
         
         logger.info(f"Loaded BM25 index from {path}")
         return index

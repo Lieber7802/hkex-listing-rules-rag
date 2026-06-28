@@ -277,7 +277,7 @@ class TestToolModeRouter:
 
 class TestShouldRoute:
 
-    def test_decompose_when_requires_decomposition(self):
+    def test_retrieve_when_requires_decomposition_without_tool(self):
         from app.agents.langgraph_workflow_v2 import should_route
 
         state: AgentState = {
@@ -310,7 +310,7 @@ class TestShouldRoute:
             "route_retry_count": 0,
         }
 
-        assert should_route(state) == "decompose"
+        assert should_route(state) == "retrieve"
 
     def test_execute_tool_when_requires_tool(self):
         from app.agents.langgraph_workflow_v2 import should_route

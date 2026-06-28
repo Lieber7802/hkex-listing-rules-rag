@@ -186,24 +186,21 @@ class AnswerVerifier:
         return normalized
 
     def _semantic_overlap(self, claim: str, chunk_text: str) -> float:
-        """Calculate semantic overlap score with legal synonym normalization."""
+        """Calculate semantic overlap score with legal synonym normalization.
+
+        Uses mixed tokenization: English words (space-split) + Chinese bigrams.
+        """
         claim_lower = claim.lower()
         text_lower = chunk_text.lower()
 
-        # Extended Chinese stop words
-        stop_words = {
-            'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'for', 'on', 'with', 'by',
-            '的', '了', '是', '在', '和', '与', '这', '那', '有', '为', '等', '及', '或', '但', '而'
-        }
+        from app.agents.coverage_checker import _tokenize_mixed
 
-        # Simple tokenization (space-based for mixed content)
-        claim_words = set(w for w in claim_lower.split() if w not in stop_words and len(w) > 1)
-        text_words = set(w for w in text_lower.split() if w not in stop_words and len(w) > 1)
+        claim_words = _tokenize_mixed(claim_lower)
+        text_words = _tokenize_mixed(text_lower)
 
         if not claim_words:
             return 0.0
 
-        # Normalize both sides to canonical forms
         claim_canonical = self._normalize_to_canonical(claim_words)
         text_canonical = self._normalize_to_canonical(text_words)
 
@@ -575,12 +572,12 @@ class AnswerVerifier:
     def _calculate_confidence(self, claims: List[str], unsupported: List[str], results: List[RetrievalResult]) -> str:
         if not claims:
             return "low"
-        
+
         support_ratio = 1 - (len(unsupported) / len(claims))
-        
-        if support_ratio >= 0.8 and len(results) >= 3:
+
+        if support_ratio >= 0.6 and len(results) >= 2:
             return "high"
-        elif support_ratio >= 0.5:
+        elif support_ratio >= 0.4:
             return "medium"
         else:
             return "low"

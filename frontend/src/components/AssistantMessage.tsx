@@ -1,6 +1,7 @@
 import type { Message } from '../types/api';
 import { ProgressIndicator } from './ProgressIndicator';
 import { Bot } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 interface AssistantMessageProps {
   message: Message;
@@ -17,12 +18,12 @@ export function AssistantMessage({ message }: AssistantMessageProps) {
       <div className="flex-1 max-w-[85%]">
         <div className="bg-white border border-slate-200 px-4 py-3 rounded-2xl rounded-tl-md shadow-sm">
           {content ? (
-            <p className={`text-sm text-slate-800 whitespace-pre-wrap leading-relaxed ${isStreaming ? 'cursor-blink' : ''}`}>
-              {content}
-            </p>
+            <div className={`markdown-message text-sm text-slate-800 leading-relaxed ${isStreaming ? 'cursor-blink' : ''}`}>
+              <ReactMarkdown>{content}</ReactMarkdown>
+            </div>
           ) : isStreaming ? (
             <div className="flex items-center gap-2 text-sm text-slate-400">
-              <span className="animate-pulse">思考中...</span>
+              <span className="animate-pulse">Thinking...</span>
             </div>
           ) : null}
 
@@ -33,7 +34,7 @@ export function AssistantMessage({ message }: AssistantMessageProps) {
                 confidenceLevel === 'medium' ? 'bg-yellow-100 text-yellow-700' :
                 'bg-red-100 text-red-700'
               }`}>
-                置信度: {confidenceLevel}
+                Confidence: {confidenceLevel}
               </span>
             </div>
           )}

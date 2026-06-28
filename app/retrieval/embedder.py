@@ -20,7 +20,7 @@ class BaseEmbedder(ABC):
 
 
 class OllamaEmbedder(BaseEmbedder):
-    def __init__(self, model_name: Optional[str] = None, base_url: Optional[str] = None, batch_size: int = 50, max_workers: int = 8):
+    def __init__(self, model_name: Optional[str] = None, base_url: Optional[str] = None, batch_size: int = 50, max_workers: int = 2):
         self.model_name = model_name or settings.embedding_model
         self.base_url = base_url or settings.ollama_base_url
         self.dimension = 1024
@@ -29,21 +29,29 @@ class OllamaEmbedder(BaseEmbedder):
         logger.info(f"Initialized Ollama embedder: {self.model_name} at {self.base_url} (workers={max_workers}, batch={batch_size})")
 
     def embed(self, texts: List[str]) -> np.ndarray:
-        """Embed texts using concurrent requests to Ollama for speed."""
+        """Embed texts using Ollama's batch endpoint."""
         total = len(texts)
+        if total == 0:
+            return np.empty((0, self.dimension), dtype=np.float32)
+
+        batches = [
+            (start, texts[start:start + self.batch_size])
+            for start in range(0, total, self.batch_size)
+        ]
         embeddings = [None] * total
 
-        def _embed_one(idx_text):
-            idx, text = idx_text
-            return idx, self._embed_single_request(text)
+        def _embed_batch(start_and_texts):
+            start, batch_texts = start_and_texts
+            return start, self._embed_batch_request(batch_texts)
 
         completed = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {executor.submit(_embed_one, (i, t)): i for i, t in enumerate(texts)}
+            futures = [executor.submit(_embed_batch, batch) for batch in batches]
             for future in concurrent.futures.as_completed(futures):
-                idx, embedding = future.result()
-                embeddings[idx] = embedding
-                completed += 1
+                start, batch_embeddings = future.result()
+                for offset, embedding in enumerate(batch_embeddings):
+                    embeddings[start + offset] = embedding
+                completed += len(batch_embeddings)
                 if completed % 200 == 0 or completed == total:
                     logger.info(f"Embedding progress: {completed}/{total} ({100*completed//total}%)")
 
@@ -52,9 +60,33 @@ class OllamaEmbedder(BaseEmbedder):
 
         return np.array(embeddings, dtype=np.float32)
 
+    def _embed_batch_request(self, texts: List[str]) -> List[List[float]]:
+        try:
+            with httpx.Client(timeout=300.0) as client:
+                response = client.post(
+                    f"{self.base_url}/api/embed",
+                    json={
+                        "model": self.model_name,
+                        "input": texts
+                    }
+                )
+                response.raise_for_status()
+                data = response.json()
+                embeddings = data.get("embeddings", [])
+                if len(embeddings) != len(texts):
+                    raise ValueError(
+                        f"Ollama returned {len(embeddings)} embeddings for {len(texts)} texts"
+                    )
+                if not embeddings or not embeddings[0]:
+                    raise ValueError("Ollama returned empty embeddings")
+                return embeddings
+        except Exception as e:
+            logger.error(f"Ollama batch embedding error for {len(texts)} text(s): {e}")
+            raise
+
     def _embed_single_request(self, text: str) -> List[float]:
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=300.0) as client:
                 response = client.post(
                     f"{self.base_url}/api/embeddings",
                     json={
@@ -64,10 +96,13 @@ class OllamaEmbedder(BaseEmbedder):
                 )
                 response.raise_for_status()
                 data = response.json()
-                return data.get("embedding", [])
+                embedding = data.get("embedding", [])
+                if not embedding:
+                    raise ValueError("Ollama returned empty embedding")
+                return embedding
         except Exception as e:
-            logger.error(f"Ollama embedding error: {e}")
-            return [0.0] * self.dimension
+            logger.error(f"Ollama embedding error for text[{len(text)} chars]: {e}")
+            raise
 
     def embed_single(self, text: str) -> np.ndarray:
         embedding = self._embed_single_request(text)

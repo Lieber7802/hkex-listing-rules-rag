@@ -1,10 +1,14 @@
 import re
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 
 
 class QueryParser:
     @staticmethod
     def extract_numbers(text: str) -> List[float]:
+        """Extract all unique numbers, sorted ascending.
+
+        For position-aware extraction, use extract_numbers_ordered().
+        """
         if not text:
             return []
         # Pattern matches: decimals with thousands separators, decimals, integers with thousands separators, plain integers, scientific notation
@@ -18,6 +22,26 @@ class QueryParser:
             except ValueError:
                 continue
         return sorted(list(set(numbers)))
+
+    @staticmethod
+    def extract_numbers_ordered(text: str) -> List[Tuple[float, int]]:
+        """Extract numbers with character positions, preserving document order."""
+        if not text:
+            return []
+        pattern = r'[+-]?(?:\d+(?:[,\s]\d{3})*\.\d+|\d+(?:[,\s]\d{3})*|\d+\.\d+|\d+)(?:[eE][+-]?\d+)?'
+        seen = set()
+        results: List[Tuple[float, int]] = []
+        for m in re.finditer(pattern, text):
+            num_str = m.group(0)
+            cleaned = num_str.replace(',', '').replace(' ', '')
+            try:
+                val = float(cleaned)
+                if val not in seen:
+                    seen.add(val)
+                    results.append((val, m.start()))
+            except ValueError:
+                continue
+        return results
     
     @staticmethod
     def extract_currency_values(text: str) -> Dict[str, Any]:
@@ -93,7 +117,7 @@ class QueryParser:
         if not text:
             return None
         text_lower = text.lower()
-        patterns_acq = [r'acquir(e|ing|ition)', r'buy(ing)?', r'purchas(e|ing)', r'takeover', r'consolidat(e|ion)']
+        patterns_acq = [r'acquis(ition|e|ing)?', r'acquir(ing|e)', r'buy(ing)?', r'purchas(e|ing)', r'takeover', r'consolidat(e|ion)']
         for pattern in patterns_acq:
             if re.search(pattern, text_lower):
                 return "acquisition"

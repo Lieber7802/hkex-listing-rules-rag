@@ -92,9 +92,6 @@ async def chat(request: QueryRequest):
             retrieved_chunks=result.get("retrieved_chunks", []),
             uncertainty_note=result.get("uncertainty_note"),
             route_decision=result.get("route_decision"),
-            decomposition_plan=result.get("decomposition_plan"),
-            route_validation=result.get("route_validation"),
-            decomposition_validation=result.get("decomposition_validation"),
             coverage_assessment=result.get("coverage_assessment"),
             selected_evidence=result.get("selected_evidence"),
             verification_result=result.get("verification_result"),
@@ -102,8 +99,9 @@ async def chat(request: QueryRequest):
             retrieval_rounds=result.get("retrieval_rounds", []),
             tool_calls=result.get("tool_calls", []),
             tool_results=result.get("tool_results", []),
+            extraction_log=result.get("extraction_log"),
             conversation_id=conversation_id,
-            turn_number=session.turn_count,  # Already incremented by append_turn
+            turn_number=session.turn_count,
         )
     except Exception as e:
         logger.error(f"Error processing query: {e}")

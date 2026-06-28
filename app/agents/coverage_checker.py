@@ -1,11 +1,42 @@
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 from pydantic import BaseModel, Field
 
 from app.schemas.query import PlannerOutput
 from app.schemas.document import Chunk
 from app.retrieval.hybrid_retriever import RetrievalResult
 from app.core.logger import logger
+
+
+_EN_STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'for', 'on', 'with', 'by'}
+_ZH_STOP_CHARS = set('的了是在和与这那有为等及或但而')
+
+
+def _tokenize_mixed(text: str) -> Set[str]:
+    """Tokenize mixed Chinese/English text.
+
+    English: space-split words, filtered by stop words.
+    Chinese: character bigrams (相邻双字), filtered by stop characters.
+    Combined tokens are returned as a set.
+    """
+    tokens: Set[str] = set()
+
+    # English tokens: extract space-separated words
+    eng_tokens = text.split()
+    for token in eng_tokens:
+        if token.lower() not in _EN_STOP_WORDS and len(token) > 1:
+            tokens.add(token.lower())
+
+    # Chinese tokens: character bigrams
+    zh_chars = [c for c in text if '\u4e00' <= c <= '\u9fff']
+    for i in range(len(zh_chars) - 1):
+        bigram = zh_chars[i] + zh_chars[i + 1]
+        # Skip if either char is a stop character
+        if zh_chars[i] in _ZH_STOP_CHARS or zh_chars[i + 1] in _ZH_STOP_CHARS:
+            continue
+        tokens.add(bigram)
+
+    return tokens
 
 
 class CoverageAssessment(BaseModel):
@@ -165,36 +196,21 @@ class CoverageChecker:
         return False
 
     def _match_section_title(self, sub_task: str, section_title: str) -> bool:
-        """Check if section title is semantically related to sub-task.
-
-        Args:
-            sub_task: The sub-task text
-            section_title: The section title to match
-
-        Returns:
-            True if section title is relevant
-        """
-        # Normalize both strings
         task_lower = sub_task.lower()
         title_lower = section_title.lower()
 
-        # Extract meaningful words (filter out common words)
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'for', 'on', 'with', 'by'}
-        task_words = set(w for w in task_lower.split() if w not in stop_words and len(w) > 2)
-        title_words = set(w for w in title_lower.split() if w not in stop_words and len(w) > 2)
+        task_words = _tokenize_mixed(task_lower)
+        title_words = _tokenize_mixed(title_lower)
 
         if not task_words or not title_words:
             return False
 
-        # Calculate overlap ratio
         overlap = task_words & title_words
         overlap_ratio = len(overlap) / min(len(task_words), len(title_words))
 
-        # Threshold: at least 40% overlap
         if overlap_ratio >= 0.4:
             return True
 
-        # Check for key HKEX terms
         hkex_terms = {
             'disclosure', 'connected', 'transaction', 'notifiable',
             'acquisition', 'disposal', 'listing', 'requirement',
@@ -204,7 +220,6 @@ class CoverageChecker:
         task_hkex = task_words & hkex_terms
         title_hkex = title_words & hkex_terms
 
-        # If both contain same HKEX terms, likely related
         if task_hkex and title_hkex and (task_hkex & title_hkex):
             return True
 
@@ -213,18 +228,13 @@ class CoverageChecker:
     def _text_overlap_score(self, sub_task: str, chunk_text: str) -> float:
         """Calculate text overlap score between sub-task and chunk text.
 
-        Args:
-            sub_task: The sub-task text
-            chunk_text: The chunk text
-
-        Returns:
-            Overlap score between 0.0 and 1.0
+        Handles both English (space-tokenized) and Chinese (character bigrams).
         """
         task_lower = sub_task.lower()
         text_lower = chunk_text.lower()
 
-        task_words = set(task_lower.split())
-        text_words = set(text_lower.split())
+        task_words = _tokenize_mixed(task_lower)
+        text_words = _tokenize_mixed(text_lower)
 
         if not task_words:
             return 0.0
@@ -232,14 +242,12 @@ class CoverageChecker:
         overlap = task_words & text_words
         overlap_ratio = len(overlap) / len(task_words)
 
-        # Bonus for key legal terms
         key_terms = ['disclosure', 'obligation', 'requirement', 'threshold', 'rule', 'transaction']
         key_term_bonus = 0.0
         for term in key_terms:
             if term in task_lower and term in text_lower:
                 key_term_bonus += 0.1
 
-        # Cap bonus at 0.3
         key_term_bonus = min(key_term_bonus, 0.3)
 
         return min(overlap_ratio + key_term_bonus, 1.0)

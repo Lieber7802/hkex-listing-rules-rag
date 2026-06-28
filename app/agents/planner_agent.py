@@ -1,8 +1,8 @@
 import re
-import os
 from typing import Any, List, Optional, Dict
 from app.schemas.query import PlannerOutput
 from app.core.config import settings
+from app.core.llm_client import get_llm_client
 from app.core.logger import logger
 
 
@@ -79,8 +79,6 @@ class PlannerAgent:
             ],
             'multi_condition': [r'and', r'as well as', r'both'],
         }
-
-        self._llm_client = None
     
     def plan(self, query: str) -> PlannerOutput:
         query_lower = query.lower().strip()
@@ -127,19 +125,7 @@ class PlannerAgent:
         return output
     
     def _get_llm_client(self) -> Optional[Any]:
-        """Get or initialize LLM client for intent classification fallback."""
-        if self._llm_client is not None:
-            return self._llm_client
-        if settings.llm_provider in ["openai", "deepseek"]:
-            try:
-                from openai import OpenAI
-                api_key = settings.llm_api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
-                if api_key:
-                    self._llm_client = OpenAI(api_key=api_key, base_url=settings.llm_base_url)
-                    logger.info(f"PlannerAgent initialized LLM client for model: {settings.llm_model}")
-            except ImportError:
-                logger.warning("openai package not installed. LLM intent fallback disabled.")
-        return self._llm_client
+        return get_llm_client()
 
     def _classify_intent_with_llm(self, query: str) -> str:
         client = self._get_llm_client()
@@ -218,6 +204,7 @@ class PlannerAgent:
             "calculation_required": "size_test_calculator",
             "rule_lookup": "rule_lookup",
             "eligibility_check": "transaction_classifier",
+            "obligation_summary": "disclosure_checklist",
         }
         return tool_map.get(intent)
 
@@ -227,6 +214,7 @@ class PlannerAgent:
             "calculation_required": "tool_only",
             "rule_lookup": "tool_plus_retrieval",
             "eligibility_check": "tool_plus_retrieval",
+            "obligation_summary": "tool_only",
         }
         return mode_map.get(intent, "none")
     

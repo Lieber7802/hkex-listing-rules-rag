@@ -50,15 +50,7 @@ class SizeTestCalculatorTool(BaseTool):
                 "transaction_type": {"type": "string", "description": "Transaction type: 'acquisition' or 'disposal'"},
             },
             "required": [
-                "issuer_market_cap",
-                "issuer_total_assets",
-                "issuer_net_assets",
-                "issuer_annual_profit",
-                "issuer_shares_outstanding",
                 "transaction_consideration",
-                "acquired_assets",
-                "acquired_profit",
-                "acquired_net_assets",
                 "transaction_type",
             ],
         }
@@ -72,17 +64,17 @@ class SizeTestCalculatorTool(BaseTool):
 
         warnings: List[str] = []
 
-        # Extract values
-        issuer_market_cap = inputs["issuer_market_cap"]
-        issuer_total_assets = inputs["issuer_total_assets"]
-        issuer_net_assets = inputs["issuer_net_assets"]
-        issuer_annual_profit = inputs["issuer_annual_profit"]
-        issuer_shares_outstanding = inputs["issuer_shares_outstanding"]
+        # Extract values with defaults for non-required fields
+        issuer_market_cap = inputs.get("issuer_market_cap", 0) or 0
+        issuer_total_assets = inputs.get("issuer_total_assets", 0) or 0
+        issuer_net_assets = inputs.get("issuer_net_assets", 0) or 0
+        issuer_annual_profit = inputs.get("issuer_annual_profit", 0) or 0
+        issuer_shares_outstanding = inputs.get("issuer_shares_outstanding", 0) or 0
         transaction_consideration = inputs["transaction_consideration"]
-        acquired_assets = inputs["acquired_assets"]
-        acquired_profit = inputs["acquired_profit"]
-        acquired_net_assets = inputs["acquired_net_assets"]
-        consideration_shares = inputs.get("consideration_shares", 0)
+        acquired_assets = inputs.get("acquired_assets", 0) or 0
+        acquired_profit = inputs.get("acquired_profit", 0) or 0
+        acquired_net_assets = inputs.get("acquired_net_assets", 0) or 0
+        consideration_shares = inputs.get("consideration_shares", 0) or 0
         transaction_type = inputs["transaction_type"]
 
         # ── Zero-denominator guard ───────────────────────────────

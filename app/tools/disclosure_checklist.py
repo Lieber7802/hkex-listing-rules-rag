@@ -53,11 +53,11 @@ def _post_completion_items() -> List[Dict[str, Any]]:
 
 def _connected_overlay_items() -> List[Dict[str, Any]]:
     return [
-        {"task": "Appoint IFA (Independent Financial Adviser)", "required": True, "deadline_days": 7, "rule_reference": "Rule 14A.46"},
-        {"task": "Obtain IFA opinion letter for circular", "required": True, "deadline_days": 15, "rule_reference": "Rule 14A.46"},
-        {"task": "Obtain independent shareholder approval", "required": True, "deadline_days": 21, "rule_reference": "Rule 14A.36"},
-        {"task": "Connected person(s) abstain from voting", "required": True, "deadline_days": 21, "rule_reference": "Rule 14A.36"},
-        {"task": "Disclose connected party relationship details", "required": True, "deadline_days": 3, "rule_reference": "Rule 14A.68"},
+        {"task": "Appoint IFA (Independent Financial Adviser)", "required": True, "deadline_days": 7, "rule_reference": "Rule 14A.46", "section": "announcement"},
+        {"task": "Obtain IFA opinion letter for circular", "required": True, "deadline_days": 15, "rule_reference": "Rule 14A.46", "section": "circular"},
+        {"task": "Obtain independent shareholder approval", "required": True, "deadline_days": 21, "rule_reference": "Rule 14A.36", "section": "shareholder_meeting"},
+        {"task": "Connected person(s) abstain from voting", "required": True, "deadline_days": 21, "rule_reference": "Rule 14A.36", "section": "shareholder_meeting"},
+        {"task": "Disclose connected party relationship details", "required": True, "deadline_days": 3, "rule_reference": "Rule 14A.68", "section": "announcement"},
     ]
 
 
@@ -155,32 +155,17 @@ class DisclosureChecklistTool(BaseTool):
         sections: List[Dict[str, Any]],
         shareholder_vote_required: bool,
     ) -> List[Dict[str, Any]]:
-        """Inject connected-transaction items into existing sections."""
+        """Inject connected-transaction items into existing sections using explicit section field."""
         section_names = {s["name"] for s in sections}
 
-        # Make sure circular and shareholder_meeting exist
         if "circular" not in section_names:
             sections.insert(-1, {"name": "circular", "items": _circular_items()})
         if "shareholder_meeting" not in section_names:
             sections.insert(-1, {"name": "shareholder_meeting", "items": _shareholder_meeting_items()})
 
-        # Add connected-specific items to announcement section (or create one)
         connected_items = _connected_overlay_items()
-
-        # Distribute connected items into relevant sections
         for s in sections:
-            if s["name"] == "announcement":
-                s["items"].extend([
-                    i for i in connected_items if i["deadline_days"] <= 3
-                ])
-            elif s["name"] == "circular":
-                s["items"].extend([
-                    i for i in connected_items
-                    if i["deadline_days"] > 3 and i["deadline_days"] <= 15
-                ])
-            elif s["name"] == "shareholder_meeting":
-                s["items"].extend([
-                    i for i in connected_items if i["deadline_days"] > 15
-                ])
+            matching = [i for i in connected_items if i.get("section") == s["name"]]
+            s["items"].extend(matching)
 
         return sections

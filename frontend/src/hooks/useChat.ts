@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { Message } from '../types/api';
+import type { Message, Citation } from '../types/api';
 import { streamChat } from '../services/api';
 
 let messageIdCounter = 0;
@@ -46,24 +46,24 @@ export function useChat() {
           switch (event) {
             case 'routing_complete':
               msg.progress = [...(msg.progress || []), {
-                label: `路由分析: ${data.query_type || 'direct'}`,
+                label: `Route: ${data.query_type || 'direct'}`,
                 status: 'done',
               }];
               break;
 
             case 'retrieval_complete':
               msg.progress = [...(msg.progress || []), {
-                label: `检索到 ${data.num_chunks || 0} 个文档`,
+                label: `Retrieved ${data.num_chunks || 0} chunks`,
                 status: 'done',
-                detail: data.top_score ? `最高分: ${(data.top_score as number).toFixed(3)}` : undefined,
+                detail: data.top_score ? `top score: ${(data.top_score as number).toFixed(3)}` : undefined,
               }];
               break;
 
             case 'tool_executed':
               msg.progress = [...(msg.progress || []), {
-                label: `工具: ${data.tool_name}`,
+                label: `Tool: ${data.tool_name}`,
                 status: 'done',
-                detail: data.success ? '成功' : '失败',
+                detail: data.success ? 'success' : 'failed',
               }];
               if (data.output_preview) {
                 msg.toolResults = [...(msg.toolResults || []), data];
@@ -74,12 +74,18 @@ export function useChat() {
               msg.content += (data.content as string) || '';
               break;
 
+            case 'citations':
+              if (data.citations) {
+                msg.citations = (data.citations as Citation[]) || [];
+              }
+              break;
+
             case 'verification_complete':
               msg.confidenceLevel = data.confidence_level as string;
               msg.progress = [...(msg.progress || []), {
-                label: `验证完成`,
+                label: 'Verification completed',
                 status: 'done',
-                detail: `置信度: ${data.confidence_level || 'N/A'}`,
+                detail: `confidence: ${data.confidence_level || 'N/A'}`,
               }];
               break;
 
@@ -110,7 +116,7 @@ export function useChat() {
         if (idx !== -1) {
           msgs[idx] = {
             ...msgs[idx],
-            content: `连接错误: ${err instanceof Error ? err.message : 'Unknown'}`,
+            content: `Connection error: ${err instanceof Error ? err.message : 'Unknown'}`,
             isStreaming: false,
           };
         }

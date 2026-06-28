@@ -51,7 +51,7 @@ export function InputBar({ onSend, disabled }: InputBarProps) {
           onChange={handleInput}
           onKeyDown={handleKeyDown}
           disabled={disabled}
-          placeholder="请输入关于HKEX上市规则的问题..."
+          placeholder="Ask a question about HKEX Listing Rules..."
           rows={1}
           className="flex-1 resize-none border border-slate-300 rounded-xl px-4 py-2.5 text-sm
                      focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500

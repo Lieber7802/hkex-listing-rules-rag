@@ -9,10 +9,23 @@ import type { Citation } from './types/api';
 import { BookOpen } from 'lucide-react';
 
 const SAMPLE_QUERIES = [
-  '什么是关联交易？',
-  'Chapter 14 的披露要求有哪些？',
-  'What is the minimum market capitalization for listing?',
-  '如何计算规模测试比率？',
+  {
+    label: 'What is a connected transaction?',
+    query: 'What is a connected transaction?',
+  },
+  {
+    label: 'What are the disclosure requirements under Chapter 14?',
+    query: 'What are the disclosure requirements under Chapter 14?',
+  },
+  {
+    label: 'What is the minimum market capitalization for listing?',
+    query: 'What is the minimum market capitalization for listing?',
+  },
+  {
+    label: 'Calculate a size test for a sample acquisition',
+    query:
+      'Calculate the size test for an acquisition. Transaction consideration is HKD 120 million, issuer total assets HKD 400 million, issuer market capitalization HKD 600 million, issuer net assets HKD 300 million, issuer annual profit HKD 50 million, and issuer revenue HKD 500 million.',
+  },
 ];
 
 export default function App() {
@@ -83,13 +96,13 @@ function EmptyState({ onQuery }: { onQuery: (q: string) => void }) {
           Ask questions about Hong Kong Stock Exchange listing rules, connected transactions, disclosure requirements, and more.
         </p>
         <div className="space-y-2">
-          {SAMPLE_QUERIES.map(q => (
+          {SAMPLE_QUERIES.map(({ label, query }) => (
             <button
-              key={q}
-              onClick={() => onQuery(q)}
+              key={label}
+              onClick={() => onQuery(query)}
               className="w-full text-left px-4 py-2.5 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:border-blue-300 hover:bg-blue-50 transition-colors"
             >
-              {q}
+              {label}
             </button>
           ))}
         </div>

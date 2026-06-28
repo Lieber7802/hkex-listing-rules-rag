@@ -6,6 +6,7 @@ GET  /v2/chat/stream  — EventSource browser API compatibility
 
 import json
 import asyncio
+import threading
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -61,36 +62,54 @@ async def _event_generator(query: str, use_llm_planner: bool = True, conversatio
             {"role": t.role, "content": t.content} for t in history_turns
         ] if history_turns else None
 
-        # Run synchronous graph.stream() in thread pool
+        # Run synchronous generator in thread pool, yield events progressively via queue
+        import concurrent.futures
+        queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_event_loop()
+        finished = threading.Event()
+        stream_error: Optional[Exception] = None
 
-        def _sync_stream():
-            return list(orch.stream_query(query, use_llm_planner, conversation_id=cid, chat_history=chat_history))
+        def _producer():
+            nonlocal stream_error
+            try:
+                for event in orch.stream_query(query, use_llm_planner, conversation_id=cid, chat_history=chat_history):
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+            except Exception as e:
+                stream_error = e
+            finally:
+                finished.set()
+                loop.call_soon_threadsafe(queue.put_nowait, None)
 
-        events = await loop.run_in_executor(None, _sync_stream)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        executor.submit(_producer)
 
-        # Save user turn and record turn number
+        # Save user turn
         store.append_turn(cid, ConversationTurn(role="user", content=query))
-        current_turn = session.turn_count  # Count after appending user turn
+        current_turn = session.turn_count
 
-        # Collect answer from events for saving
         answer_parts = []
-        for event in events:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
             event_type = event["event"]
             event_data = event["data"]
 
-            # Inject conversation_id into done event
             if event_type == "done":
                 event_data["conversation_id"] = cid
                 event_data["turn_number"] = current_turn
 
-            # Collect answer chunks
             if event_type == "answer_chunk":
                 answer_parts.append(event_data.get("content", ""))
 
             yield f"event: {event_type}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
 
-        # Save assistant turn
+        if stream_error:
+            logger.error(f"Streaming error: {stream_error}")
+            yield f"event: error\ndata: {json.dumps({'message': str(stream_error)})}\n\n"
+
+        executor.shutdown(wait=False)
+
         full_answer = "".join(answer_parts)
         if full_answer:
             store.append_turn(cid, ConversationTurn(role="assistant", content=full_answer))

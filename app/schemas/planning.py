@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.schemas.query import PlannerOutput
 
 
 class ToolDecision(BaseModel):
@@ -21,22 +26,34 @@ class RouteDecision(BaseModel):
     llm_confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="LLM confidence score")
     validation_warnings: List[str] = Field(default_factory=list, description="Validation warnings")
     fallback_used: bool = Field(default=False, description="Whether fallback was used")
+    sub_queries: List[str] = Field(default_factory=list, description="Decomposed sub-queries for multi-hop retrieval")
+
+    def to_planner_output(self) -> "PlannerOutput":
+        from app.schemas.query import PlannerOutput
+        return PlannerOutput(
+            query_type=self.query_type,
+            sub_queries=self.sub_queries,
+            needs_second_retrieval=self.retrieval_strategy == "targeted_iterative",
+            reason=self.route_reason or "",
+            intent=self.intent,
+            sub_tasks=self.sub_queries if self.sub_queries else [],
+            retrieval_strategy=self.retrieval_strategy,
+            requires_tool=self.tool_decision.requires_tool,
+            evidence_requirements={},
+            answer_format=self.answer_format,
+            tool_name=self.tool_decision.tool_name,
+            tool_mode=self.tool_decision.tool_mode,
+        )
 
 
 class SubTask(BaseModel):
     id: str = Field(..., description="Unique task identifier")
     type: str = Field(..., description="Task type: retrieval, tool, reasoning_prep")
-    goal: str = Field(..., description="Goal of this subtask")
     query: str = Field(..., description="Query for this subtask")
-    depends_on: List[str] = Field(default_factory=list, description="IDs of tasks this depends on")
-    priority: str = Field(default="medium", description="Priority: high, medium, low")
-    expected_output: Optional[str] = Field(default=None, description="Expected output description")
 
 
 class DecompositionPlan(BaseModel):
     subtasks: List[SubTask] = Field(default_factory=list, description="List of subtasks")
-    merge_strategy: str = Field(default="sequential", description="How to merge subtask results")
-    coverage_targets: List[str] = Field(default_factory=list, description="Coverage targets for evaluation")
     decomposition_reason: Optional[str] = Field(default=None, description="Reasoning for decomposition")
     llm_confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="LLM confidence score")
     validation_warnings: List[str] = Field(default_factory=list, description="Validation warnings")

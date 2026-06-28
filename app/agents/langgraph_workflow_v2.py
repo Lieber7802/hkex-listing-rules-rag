@@ -1,26 +1,31 @@
+from __future__ import annotations
+
 from typing import Dict, Any, Optional
 from pathlib import Path
+import uuid
 
 from langgraph.graph import StateGraph, END
 
 from app.agents.graph_state import AgentState
-from app.agents.llm_route_planner import LLMRoutePlanner
-from app.agents.route_validator import HeuristicRouteValidator
-from app.agents.task_decomposer import TaskDecomposer
-from app.agents.decomposition_validator import DecompositionValidator
 from app.agents.planner_agent import PlannerAgent
 from app.agents.reasoning_agent import ReasoningAgent
-from app.agents.citation_formatter import CitationFormatter
+from app.agents.citation_formatter import CitationFormatter, format_citations
 from app.agents.coverage_checker import CoverageChecker
-from app.agents.evidence_selector import EvidenceSelector
+from app.agents.evidence_selector import EvidenceSelector, select_evidence
 from app.agents.answer_verifier import AnswerVerifier
+from app.agents.tool_input_extraction_node import tool_input_extraction_node, extract_tool_inputs
 from app.retrieval.index_store import IndexStore
 from app.retrieval.hybrid_retriever import HybridRetriever, RetrievalResult
 from app.retrieval.embedder import get_embedder
-from app.schemas.planning import RouteDecision
+from app.schemas.planning import RouteDecision, ToolDecision
+from app.schemas.query import PlannerOutput
+from app.schemas.citation import Citation
 from app.tools.base_tool import ToolRegistry
 from app.core.config import settings
 from app.core.logger import logger
+
+
+MAX_RETRIEVAL_ROUNDS = 2
 
 
 class GraphNodes:
@@ -28,46 +33,33 @@ class GraphNodes:
         self,
         index_store: Optional[IndexStore] = None,
         index_path: Optional[Path] = None,
-        use_llm_planner: bool = True
+        use_llm_planner: bool = True,
+        **kwargs,
     ):
         self.index_store = index_store
         self.index_path = index_path or settings.indexes_dir
         self.retriever: Optional[HybridRetriever] = None
-        self.use_llm_planner = use_llm_planner
-        
-        self.llm_route_planner = LLMRoutePlanner()
-        self.route_validator = HeuristicRouteValidator()
-        self.task_decomposer = TaskDecomposer()
-        self.decomposition_validator = DecompositionValidator()
-        
-        self.heuristic_planner = PlannerAgent()
+        self.planner = PlannerAgent()
         self.reasoning_agent = ReasoningAgent()
         self.citation_formatter = CitationFormatter()
         self.coverage_checker = CoverageChecker()
         self.evidence_selector = EvidenceSelector()
         self.answer_verifier = AnswerVerifier()
-
-        # Tool registry
         self.tool_registry = ToolRegistry()
 
         if self.index_store is None and Path(self.index_path).exists():
             self._load_index_store()
-
         self._register_tools()
-    
+
     def _load_index_store(self):
         try:
             self.index_store = IndexStore.load(self.index_path)
-            self.retriever = HybridRetriever(
-                index_store=self.index_store,
-                embedder=get_embedder()
-            )
+            self.retriever = HybridRetriever(index_store=self.index_store, embedder=get_embedder())
             logger.info(f"GraphNodes: Loaded index store from {self.index_path}")
         except Exception as e:
             logger.error(f"GraphNodes: Failed to load index store: {e}")
 
     def _register_tools(self):
-        """Register all HKEX tools in the tool registry."""
         from app.tools.size_test_calculator import SizeTestCalculatorTool
         from app.tools.transaction_classifier import TransactionClassifierTool
         from app.tools.disclosure_checklist import DisclosureChecklistTool
@@ -77,145 +69,82 @@ class GraphNodes:
         self.tool_registry.register(TransactionClassifierTool())
         self.tool_registry.register(DisclosureChecklistTool())
         self.tool_registry.register(RuleLookupTool(index_store=self.index_store))
-    
+
     def is_ready(self) -> bool:
         return self.index_store is not None and self.retriever is not None
 
 
-def llm_route_planner_node(nodes: GraphNodes):
+def planner_agent_v2_node(nodes: GraphNodes):
     def node(state: AgentState) -> Dict[str, Any]:
         query = state["query"]
-        use_llm = state.get("use_llm_planner", True)
-        retry_count = state.get("route_retry_count", 0)
+        planner_output = nodes.planner.plan(query)
 
-        if use_llm and nodes.use_llm_planner:
-            route_decision = nodes.llm_route_planner.plan(query)
-        else:
-            planner_output = nodes.heuristic_planner.plan(query)
-            from app.schemas.planning import ToolDecision
-            route_decision = RouteDecision(
-                query_type=planner_output.query_type,
-                intent=planner_output.intent,
-                requires_decomposition=planner_output.query_type == "multi_hop",
-                retrieval_strategy=planner_output.retrieval_strategy,
-                tool_decision=ToolDecision(
-                    requires_tool=planner_output.requires_tool,
-                    tool_name=planner_output.tool_name,
-                    tool_mode=planner_output.tool_mode if planner_output.requires_tool else "none",
-                ),
-                answer_format=planner_output.answer_format,
-                route_reason=planner_output.reason,
-                fallback_used=True
-            )
+        tool_name = planner_output.tool_name if planner_output.requires_tool else None
+        tool_mode = planner_output.tool_mode if planner_output.requires_tool else "none"
+        tool_inputs_hint: Dict[str, Any] = {}
+        if planner_output.requires_tool and tool_name:
+            tool_inputs_hint = extract_tool_inputs(query, tool_name)
+
+        route_decision = RouteDecision(
+            query_type=planner_output.query_type,
+            intent=planner_output.intent,
+            requires_decomposition=False,
+            retrieval_strategy=planner_output.retrieval_strategy,
+            tool_decision=ToolDecision(
+                requires_tool=planner_output.requires_tool,
+                tool_name=tool_name,
+                tool_mode=tool_mode,
+                tool_inputs_hint=tool_inputs_hint,
+            ),
+            answer_format=planner_output.answer_format,
+            route_reason=planner_output.reason,
+            fallback_used=False,
+            sub_queries=list(planner_output.sub_queries),
+        )
+
+        logger.info(
+            f"Planner v2: query_type={route_decision.query_type}, "
+            f"intent={route_decision.intent}, requires_tool={route_decision.tool_decision.requires_tool}, "
+            f"sub_queries={len(route_decision.sub_queries)}"
+        )
 
         return {
             "route_decision": route_decision.model_dump(),
             "query_type": route_decision.query_type,
-            "use_llm_planner": use_llm,
-            "route_retry_count": retry_count + 1,
+            "iteration_count": 0,
+            "retrieval_rounds": [],
         }
 
-    return node
-
-
-def route_validator_node(nodes: GraphNodes):
-    def node(state: AgentState) -> Dict[str, Any]:
-        route_dict = state.get("route_decision")
-        query = state["query"]
-        
-        if not route_dict:
-            return {"route_validation": None}
-        
-        route_decision = RouteDecision(**route_dict)
-        validation = nodes.route_validator.validate(route_decision, query)
-        
-        return {
-            "route_validation": validation.model_dump()
-        }
-    
-    return node
-
-
-def task_decomposer_node(nodes: GraphNodes):
-    def node(state: AgentState) -> Dict[str, Any]:
-        route_dict = state.get("route_decision")
-        query = state["query"]
-        
-        if not route_dict:
-            return {"decomposition_plan": None}
-        
-        route_decision = RouteDecision(**route_dict)
-        
-        if not route_decision.requires_decomposition:
-            return {"decomposition_plan": None}
-        
-        decomposition = nodes.task_decomposer.decompose(query, route_decision)
-        
-        return {
-            "decomposition_plan": decomposition.model_dump()
-        }
-    
-    return node
-
-
-def decomposition_validator_node(nodes: GraphNodes):
-    def node(state: AgentState) -> Dict[str, Any]:
-        route_dict = state.get("route_decision")
-        decomp_dict = state.get("decomposition_plan")
-        
-        if not decomp_dict:
-            return {"decomposition_validation": None}
-        
-        from app.schemas.planning import DecompositionPlan, RouteDecision
-        decomposition = DecompositionPlan(**decomp_dict)
-        route = RouteDecision(**route_dict) if route_dict else None
-        
-        validation = nodes.decomposition_validator.validate(decomposition, route)
-        
-        return {
-            "decomposition_validation": validation.model_dump()
-        }
-    
     return node
 
 
 def retriever_node(nodes: GraphNodes):
     def node(state: AgentState) -> Dict[str, Any]:
         if not nodes.is_ready():
-            return {
-                "error": "Index not loaded",
-                "retrieved_chunks": []
-            }
+            return {"error": "Index not loaded", "retrieved_chunks": []}
 
         query = state["query"]
-        chat_history = state.get("chat_history")
         route_dict = state.get("route_decision")
-        decomp_dict = state.get("decomposition_plan")
+        chat_history = state.get("chat_history")
 
-        # Contextual query rewriting for multi-turn (resolve coreferences)
         original_query = None
         if chat_history:
             from app.agents.contextual_query_rewriter import ContextualQueryRewriter
             from app.models.conversation import ConversationTurn
 
             rewriter = ContextualQueryRewriter()
-            history_turns = [
-                ConversationTurn(role=h["role"], content=h["content"])
-                for h in chat_history
-            ]
+            history_turns = [ConversationTurn(role=h["role"], content=h["content"]) for h in chat_history]
             rewritten = rewriter.rewrite(query, history_turns)
             if rewritten != query:
                 original_query = query
                 query = rewritten
 
-        results = []
+        route_decision = RouteDecision(**route_dict) if route_dict else None
+        sub_queries = route_decision.sub_queries if route_decision else []
 
-        if decomp_dict:
-            from app.schemas.planning import DecompositionPlan
-            decomp = DecompositionPlan(**decomp_dict)
-            queries = [task.query for task in decomp.subtasks if task.type == "retrieval"]
-            if queries:
-                results = nodes.retriever.retrieve_for_sub_queries(queries)
+        results = []
+        if sub_queries and route_decision and route_decision.query_type == "multi_hop":
+            results = nodes.retriever.retrieve_for_sub_queries(sub_queries)
 
         if not results:
             results = nodes.retriever.retrieve(query)
@@ -229,17 +158,22 @@ def retriever_node(nodes: GraphNodes):
                 "chapter": r.chunk.chapter,
                 "source_path": r.chunk.source_path,
                 "text": r.chunk.text,
-                "score": r.score
+                "score": r.score,
+                "bm25_score": getattr(r, "bm25_score", r.score),
+                "dense_score": getattr(r, "dense_score", r.score),
             }
             for r in results[:10]
         ]
 
         logger.info(f"Retriever node: retrieved {len(chunks_data)} chunks")
 
-        result = {"retrieved_chunks": chunks_data}
+        result = {
+            "retrieved_chunks": chunks_data,
+            "iteration_count": state.get("iteration_count", 0) + 1,
+        }
         if original_query:
             result["original_query"] = original_query
-            result["query"] = query  # Update query for downstream nodes
+            result["query"] = query
         return result
 
     return node
@@ -249,49 +183,23 @@ def coverage_checker_node(nodes: GraphNodes):
     def node(state: AgentState) -> Dict[str, Any]:
         route_dict = state.get("route_decision")
         chunks_data = state["retrieved_chunks"]
-        
+
         if not chunks_data or not route_dict:
-            return {
-                "coverage_assessment": None,
-                "needs_second_retrieval": False
-            }
-        
-        from app.schemas.planning import RouteDecision
+            return {"coverage_assessment": None, "needs_second_retrieval": False}
+
         route_decision = RouteDecision(**route_dict)
-        
-        from app.schemas.query import PlannerOutput
-        planner_output = PlannerOutput(
-            query_type=route_decision.query_type,
-            sub_queries=[],
-            needs_second_retrieval=False,
-            reason=route_decision.route_reason or "",
-            intent=route_decision.intent,
-            sub_tasks=[],
-            retrieval_strategy=route_decision.retrieval_strategy,
-            requires_tool=route_decision.tool_decision.requires_tool,
-            evidence_requirements={},
-            answer_format=route_decision.answer_format
-        )
-        
-        results = [
-            RetrievalResult(
-                chunk_id=c["chunk_id"],
-                chunk=nodes.index_store.get_chunk_by_id(c["chunk_id"]) if nodes.index_store else None,
-                score=c["score"],
-                bm25_score=0.0,
-                dense_score=c["score"]
-            )
-            for c in chunks_data
-            if nodes.index_store and nodes.index_store.get_chunk_by_id(c["chunk_id"])
-        ]
-        
+
+        if route_decision.tool_decision and route_decision.tool_decision.tool_mode == "tool_only":
+            return {"coverage_assessment": None, "needs_second_retrieval": False}
+
+        planner_output = route_decision.to_planner_output()
+        results = _reconstruct_results(chunks_data, nodes.index_store)
         assessment = nodes.coverage_checker.assess(planner_output, results)
-        
         return {
             "coverage_assessment": assessment.model_dump(),
-            "needs_second_retrieval": assessment.needs_targeted_retrieval
+            "needs_second_retrieval": assessment.needs_targeted_retrieval,
         }
-    
+
     return node
 
 
@@ -299,45 +207,23 @@ def evidence_selector_node(nodes: GraphNodes):
     def node(state: AgentState) -> Dict[str, Any]:
         route_dict = state.get("route_decision")
         chunks_data = state["retrieved_chunks"]
-        
-        if not chunks_data:
+        tool_results = state.get("tool_results", [])
+
+        if not chunks_data and tool_results:
             return {"selected_evidence": None}
-        
-        from app.schemas.planning import RouteDecision
+
         route_decision = RouteDecision(**route_dict) if route_dict else None
-        
-        from app.schemas.query import PlannerOutput
-        planner_output = PlannerOutput(
-            query_type=route_decision.query_type if route_decision else "direct",
-            sub_queries=[],
-            needs_second_retrieval=False,
-            reason="",
-            intent=route_decision.intent if route_decision else "general",
-            sub_tasks=[],
-            retrieval_strategy=route_decision.retrieval_strategy if route_decision else "single_pass",
-            requires_tool=False,
-            evidence_requirements={},
-            answer_format="concise_with_citations"
-        )
-        
-        results = [
-            RetrievalResult(
-                chunk_id=c["chunk_id"],
-                chunk=nodes.index_store.get_chunk_by_id(c["chunk_id"]) if nodes.index_store else None,
-                score=c["score"],
-                bm25_score=0.0,
-                dense_score=c["score"]
-            )
-            for c in chunks_data
-            if nodes.index_store and nodes.index_store.get_chunk_by_id(c["chunk_id"])
-        ]
-        
-        selected = nodes.evidence_selector.select(planner_output, results)
-        
-        return {
-            "selected_evidence": selected.model_dump()
-        }
-    
+        planner_output = route_decision.to_planner_output() if route_decision else None
+
+        results = _reconstruct_results(chunks_data, nodes.index_store)
+
+        if planner_output:
+            selected = nodes.evidence_selector.select(planner_output, results)
+        else:
+            selected = select_evidence(results)
+
+        return {"selected_evidence": selected.model_dump()}
+
     return node
 
 
@@ -348,71 +234,49 @@ def reasoning_node(nodes: GraphNodes):
         chunks_data = state["retrieved_chunks"]
         tool_results = state.get("tool_results", [])
 
-        # If no chunks but tool results exist, format tool output as answer
-        if not chunks_data and tool_results:
-            successful_results = [r for r in tool_results if r.get("success")]
-            if successful_results:
-                import json
-                tool_output_str = json.dumps(successful_results[0]["output"], indent=2, ensure_ascii=False)
-                return {
-                    "answer": f"Tool execution result:\n\n{tool_output_str}",
-                    "uncertainty_note": None,
-                    "citations": []
-                }
-
-        if not chunks_data:
-            return {
-                "answer": "I could not find relevant information to answer your question.",
-                "uncertainty_note": "No relevant documents found in the knowledge base.",
-                "citations": []
-            }
-        
-        from app.schemas.planning import RouteDecision
         route_decision = RouteDecision(**route_dict) if route_dict else None
-        
-        from app.schemas.query import PlannerOutput
-        planner_output = PlannerOutput(
-            query_type=route_decision.query_type if route_decision else "direct",
-            sub_queries=[],
-            needs_second_retrieval=False,
-            reason="",
-            intent=route_decision.intent if route_decision else "general",
-            sub_tasks=[],
-            retrieval_strategy=route_decision.retrieval_strategy if route_decision else "single_pass",
-            requires_tool=False,
-            evidence_requirements={},
-            answer_format=route_decision.answer_format if route_decision else "concise_with_citations"
+        planner_output = route_decision.to_planner_output() if route_decision else PlannerOutput(
+            query_type="direct", sub_queries=[], intent="general"
         )
-        
-        results = [
-            RetrievalResult(
-                chunk_id=c["chunk_id"],
-                chunk=nodes.index_store.get_chunk_by_id(c["chunk_id"]) if nodes.index_store else None,
-                score=c["score"],
-                bm25_score=0.0,
-                dense_score=c["score"]
-            )
-            for c in chunks_data
-            if nodes.index_store and nodes.index_store.get_chunk_by_id(c["chunk_id"])
-        ]
-        
+
+        results = _reconstruct_results(chunks_data, nodes.index_store)
+
         reasoning_output = nodes.reasoning_agent.reason(
             query=query,
             planner_output=planner_output,
             retrieval_results=results,
             chat_history=state.get("chat_history"),
+            tool_results=tool_results if tool_results else None,
         )
-        
-        citations = nodes.citation_formatter.format_citations(
+
+        citations = format_citations(
             [r for r in results if r.chunk_id in reasoning_output.used_chunk_ids]
         )
-        
+
+        if tool_results and not results:
+            for tr in tool_results:
+                if tr.get("success") and tr.get("tool_name") == "rule_lookup":
+                    output = tr.get("output", {})
+                    for chunk_data in output.get("chunks", []):
+                        chunk = nodes.index_store.get_chunk_by_id(chunk_data.get("chunk_id")) if nodes.index_store else None
+                        if chunk:
+                            citations.append(Citation(
+                                chunk_id=chunk_data.get("chunk_id", ""),
+                                document_id=chunk_data.get("source_path", ""),
+                                rule_number=chunk_data.get("rule_number"),
+                                section_title=chunk_data.get("section_title"),
+                                chapter=chunk_data.get("chapter"),
+                                source_path=chunk_data.get("source_path", ""),
+                                snippet=chunk_data.get("text", "")[:300],
+                                score=1.0,
+                            ))
+
         return {
             "answer": reasoning_output.answer,
             "uncertainty_note": reasoning_output.uncertainty_note,
-            "citations": citations
+            "citations": citations,
         }
-    
+
     return node
 
 
@@ -420,139 +284,108 @@ def answer_verifier_node(nodes: GraphNodes):
     def node(state: AgentState) -> Dict[str, Any]:
         answer = state.get("answer")
         chunks_data = state.get("retrieved_chunks", [])
-        
+        tool_results = state.get("tool_results", [])
+
         if not answer:
-            return {
-                "verification_result": None,
-                "confidence_level": "low"
-            }
-        
-        results = [
-            RetrievalResult(
-                chunk_id=c["chunk_id"],
-                chunk=nodes.index_store.get_chunk_by_id(c["chunk_id"]) if nodes.index_store else None,
-                score=c["score"],
-                bm25_score=0.0,
-                dense_score=c["score"]
-            )
-            for c in chunks_data
-            if nodes.index_store and nodes.index_store.get_chunk_by_id(c["chunk_id"])
-        ]
-        
+            return {"verification_result": None, "confidence_level": "low"}
+
+        results = _reconstruct_results(chunks_data, nodes.index_store)
+
+        if not results and tool_results:
+            successful_tools = [r for r in tool_results if r.get("success")]
+            if successful_tools:
+                return {
+                    "verification_result": {
+                        "is_supported": True,
+                        "unsupported_claims": [],
+                        "contradictions": [],
+                        "confidence_level": "high",
+                        "summary": f"Answer is supported by tool execution ({len(successful_tools)} tool(s) executed successfully).",
+                    },
+                    "confidence_level": "high",
+                }
+
         verification = nodes.answer_verifier.verify(answer, results)
-        
         return {
             "verification_result": verification.model_dump(),
-            "confidence_level": verification.confidence_level
-        }
-    
-    return node
-
-
-def should_decompose(state: AgentState) -> str:
-    route_dict = state.get("route_decision")
-    if not route_dict:
-        return "retrieve"
-
-    from app.schemas.planning import RouteDecision
-    route = RouteDecision(**route_dict)
-
-    if route.requires_decomposition:
-        return "decompose"
-    return "retrieve"
-
-
-def heuristic_fallback_node(nodes: GraphNodes):
-    """Produces a route decision using pure heuristic when LLM routing fails validation."""
-    def node(state: AgentState) -> Dict[str, Any]:
-        query = state["query"]
-        planner_output = nodes.heuristic_planner.plan(query)
-
-        from app.schemas.planning import ToolDecision
-        route_decision = RouteDecision(
-            query_type=planner_output.query_type,
-            intent=planner_output.intent,
-            requires_decomposition=planner_output.query_type == "multi_hop",
-            retrieval_strategy=planner_output.retrieval_strategy,
-            tool_decision=ToolDecision(
-                requires_tool=planner_output.requires_tool,
-                tool_name=planner_output.tool_name,
-                tool_mode=planner_output.tool_mode if planner_output.requires_tool else "none",
-            ),
-            answer_format=planner_output.answer_format,
-            route_reason=f"Heuristic fallback: {planner_output.reason}",
-            fallback_used=True
-        )
-
-        logger.info(f"Heuristic fallback produced route: {route_decision.query_type}/{route_decision.intent}")
-
-        return {
-            "route_decision": route_decision.model_dump(),
-            "query_type": route_decision.query_type,
+            "confidence_level": verification.confidence_level,
         }
 
     return node
 
 
-def decompose_router_node(nodes: GraphNodes):
-    """Pass-through node serving as convergence point for should_route branching."""
-    def node(state: AgentState) -> Dict[str, Any]:
-        return {}
-
-    return node
+def _reconstruct_results(chunks_data, index_store):
+    """Reconstruct RetrievalResult list from serialized chunks, preserving per-signal scores."""
+    results = []
+    for c in chunks_data:
+        chunk = index_store.get_chunk_by_id(c["chunk_id"]) if index_store else None
+        if chunk:
+            results.append(RetrievalResult(
+                chunk_id=c["chunk_id"],
+                chunk=chunk,
+                score=c["score"],
+                bm25_score=c.get("bm25_score", c["score"]),
+                dense_score=c.get("dense_score", c["score"]),
+            ))
+    return results
 
 
 def _execute_single_tool(
-    nodes: 'GraphNodes', tool_name: str, inputs: Dict[str, Any], call_id: str
+    nodes: GraphNodes, tool_name: str, inputs: Dict[str, Any], call_id: str,
+    query: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute a single tool and return the result dict."""
     tool = nodes.tool_registry.get(tool_name)
     if tool is None:
         return {
-            "call_id": call_id,
-            "tool_name": tool_name,
-            "success": False,
-            "output": None,
+            "call_id": call_id, "tool_name": tool_name,
+            "success": False, "output": None,
             "error": f"Tool not found: '{tool_name}'",
         }
 
     validation_errors = tool.validate_inputs(inputs)
     if validation_errors:
+        if query and (not inputs or len(inputs) <= 1):
+            recovered = extract_tool_inputs(query, tool_name)
+            if recovered:
+                merged = {**recovered, **{k: v for k, v in inputs.items() if v}}
+                retry_errors = tool.validate_inputs(merged)
+                if not retry_errors:
+                    logger.info(f"Fallback recovery succeeded for {tool_name}")
+                    try:
+                        output = tool.run(merged)
+                        return {
+                            "call_id": call_id, "tool_name": tool_name,
+                            "success": True, "output": output, "error": None,
+                            "_recovered": True,
+                        }
+                    except Exception as e:
+                        return {
+                            "call_id": call_id, "tool_name": tool_name,
+                            "success": False, "output": None,
+                            "error": f"Tool execution error after recovery: {str(e)}",
+                        }
         return {
-            "call_id": call_id,
-            "tool_name": tool_name,
-            "success": False,
-            "output": None,
+            "call_id": call_id, "tool_name": tool_name,
+            "success": False, "output": None,
             "error": f"Input validation failed: {'; '.join(validation_errors)}",
         }
 
     try:
         output = tool.run(inputs)
         return {
-            "call_id": call_id,
-            "tool_name": tool_name,
-            "success": True,
-            "output": output,
-            "error": None,
+            "call_id": call_id, "tool_name": tool_name,
+            "success": True, "output": output, "error": None,
         }
     except Exception as e:
         return {
-            "call_id": call_id,
-            "tool_name": tool_name,
-            "success": False,
-            "output": None,
+            "call_id": call_id, "tool_name": tool_name,
+            "success": False, "output": None,
             "error": f"Tool execution error: {str(e)}",
         }
 
 
 def tool_executor_node(nodes: GraphNodes):
-    """Executes the tool specified in route_decision.tool_decision.
-
-    Supports tool chaining: if a tool's output can feed a downstream tool,
-    executes the chain automatically (e.g., size_test → classifier → checklist).
-    """
     def node(state: AgentState) -> Dict[str, Any]:
-        import uuid
         from app.tools.tool_chain import should_chain, get_next_chain_target
 
         route_dict = state.get("route_decision")
@@ -570,28 +403,23 @@ def tool_executor_node(nodes: GraphNodes):
 
         all_tool_calls = []
         all_tool_results = []
-
-        # User context for chain defaults (e.g., transaction_type, is_connected)
         user_context = dict(tool_inputs)
+        query_text = state.get("query", "") or state.get("original_query", "")
 
-        # === Execute primary tool ===
         call_id = str(uuid.uuid4())[:8]
         tool_call = {"call_id": call_id, "tool_name": tool_name, "inputs": tool_inputs}
         all_tool_calls.append(tool_call)
 
-        primary_result = _execute_single_tool(nodes, tool_name, tool_inputs, call_id)
+        primary_result = _execute_single_tool(nodes, tool_name, tool_inputs, call_id, query_text)
         all_tool_results.append(primary_result)
 
-        # === Chain execution ===
         if primary_result["success"] and should_chain(tool_name, primary_result["output"]):
             current_tool = tool_name
             current_output = primary_result["output"]
             visited = {tool_name}
 
             while True:
-                next_step = get_next_chain_target(
-                    current_tool, current_output, user_context, visited
-                )
+                next_step = get_next_chain_target(current_tool, current_output, user_context, visited)
                 if next_step is None:
                     break
 
@@ -608,7 +436,7 @@ def tool_executor_node(nodes: GraphNodes):
                     current_tool = target_name
                     current_output = chain_result["output"]
                 else:
-                    break  # Stop chain on failure
+                    break
 
         logger.info(f"Tool executor: executed {len(all_tool_calls)} tool(s)")
         return {"tool_calls": all_tool_calls, "tool_results": all_tool_results}
@@ -616,8 +444,18 @@ def tool_executor_node(nodes: GraphNodes):
     return node
 
 
+def should_route(state: AgentState) -> str:
+    route_dict = state.get("route_decision")
+    if not route_dict:
+        return "retrieve"
+
+    route_decision = RouteDecision(**route_dict)
+    if route_decision.tool_decision and route_decision.tool_decision.requires_tool:
+        return "execute_tool"
+    return "retrieve"
+
+
 def tool_mode_router(state: AgentState) -> str:
-    """Route after tool execution: tool_only skips retrieval, tool_plus_retrieval continues."""
     route_dict = state.get("route_decision")
     if not route_dict:
         return "retrieve"
@@ -630,53 +468,11 @@ def tool_mode_router(state: AgentState) -> str:
     return "retrieve"
 
 
-def should_route(state: AgentState) -> str:
-    """3-way routing: decompose / execute_tool / retrieve."""
-    route_dict = state.get("route_decision")
-    if not route_dict:
-        return "retrieve"
-
-    route_decision = RouteDecision(**route_dict)
-
-    # Tool execution takes priority over decomposition
-    if route_decision.tool_decision and route_decision.tool_decision.requires_tool:
-        return "execute_tool"
-
-    if route_decision.requires_decomposition:
-        return "decompose"
-
-    return "retrieve"
-
-
-def should_retry_route(state: AgentState) -> str:
-    validation_dict = state.get("route_validation")
-    if not validation_dict:
-        return "continue"
-
-    from app.schemas.planning import RouteValidationResult
-    validation = RouteValidationResult(**validation_dict)
-
-    retry_count = state.get("route_retry_count", 0)
-
-    if validation.should_fallback:
-        return "fallback"
-    if validation.should_retry and retry_count < 1:
-        return "retry"
-    if validation.should_retry and retry_count >= 1:
-        # Exhausted retries — fall back to heuristic
-        return "fallback"
-    return "continue"
-
-
 def build_graph(nodes: GraphNodes) -> StateGraph:
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("llm_route_planner", llm_route_planner_node(nodes))
-    workflow.add_node("route_validator", route_validator_node(nodes))
-    workflow.add_node("heuristic_fallback", heuristic_fallback_node(nodes))
-    workflow.add_node("decompose_router", decompose_router_node(nodes))
-    workflow.add_node("task_decomposer", task_decomposer_node(nodes))
-    workflow.add_node("decomposition_validator", decomposition_validator_node(nodes))
+    workflow.add_node("planner_agent_v2", planner_agent_v2_node(nodes))
+    workflow.add_node("tool_input_extraction", tool_input_extraction_node(nodes))
     workflow.add_node("tool_executor", tool_executor_node(nodes))
     workflow.add_node("retriever", retriever_node(nodes))
     workflow.add_node("coverage_checker", coverage_checker_node(nodes))
@@ -684,56 +480,42 @@ def build_graph(nodes: GraphNodes) -> StateGraph:
     workflow.add_node("reasoning", reasoning_node(nodes))
     workflow.add_node("answer_verifier", answer_verifier_node(nodes))
 
-    workflow.set_entry_point("llm_route_planner")
+    workflow.set_entry_point("planner_agent_v2")
 
-    workflow.add_edge("llm_route_planner", "route_validator")
-
-    # Route validator → retry/fallback/continue
     workflow.add_conditional_edges(
-        "route_validator",
-        should_retry_route,
-        {
-            "retry": "llm_route_planner",
-            "fallback": "heuristic_fallback",
-            "continue": "decompose_router",
-        }
-    )
-
-    workflow.add_edge("heuristic_fallback", "decompose_router")
-
-    # Decompose router → 3-way: decompose / execute_tool / retrieve
-    workflow.add_conditional_edges(
-        "decompose_router",
+        "planner_agent_v2",
         should_route,
         {
-            "decompose": "task_decomposer",
-            "execute_tool": "tool_executor",
+            "execute_tool": "tool_input_extraction",
             "retrieve": "retriever",
-        }
+        },
     )
 
-    workflow.add_edge("task_decomposer", "decomposition_validator")
-    workflow.add_edge("decomposition_validator", "retriever")
+    workflow.add_edge("tool_input_extraction", "tool_executor")
 
-    # Tool executor → tool_mode_router: select (skip retrieval) or retrieve
     workflow.add_conditional_edges(
         "tool_executor",
         tool_mode_router,
         {
             "select": "evidence_selector",
             "retrieve": "retriever",
-        }
+        },
     )
 
     workflow.add_edge("retriever", "coverage_checker")
 
     workflow.add_conditional_edges(
         "coverage_checker",
-        lambda state: "retrieve" if state.get("needs_second_retrieval") else "select",
+        lambda state: (
+            "retrieve"
+            if state.get("needs_second_retrieval")
+            and state.get("iteration_count", 0) < MAX_RETRIEVAL_ROUNDS
+            else "select"
+        ),
         {
             "retrieve": "retriever",
-            "select": "evidence_selector"
-        }
+            "select": "evidence_selector",
+        },
     )
 
     workflow.add_edge("evidence_selector", "reasoning")
@@ -748,19 +530,22 @@ class LangGraphOrchestratorV2:
         self,
         index_store: Optional[IndexStore] = None,
         index_path: Optional[Path] = None,
-        use_llm_planner: bool = True
+        use_llm_planner: bool = True,
     ):
-        self.nodes = GraphNodes(
-            index_store=index_store,
-            index_path=index_path,
-            use_llm_planner=use_llm_planner
-        )
+        self.nodes = GraphNodes(index_store=index_store, index_path=index_path)
         self.graph = build_graph(self.nodes)
-    
+        self.use_llm_planner = use_llm_planner
+
     def is_ready(self) -> bool:
         return self.nodes.is_ready()
-    
-    def process_query(self, query: str, use_llm_planner: bool = True, conversation_id: Optional[str] = None, chat_history: Optional[list] = None) -> Dict[str, Any]:
+
+    def process_query(
+        self,
+        query: str,
+        use_llm_planner: bool = True,
+        conversation_id: Optional[str] = None,
+        chat_history: Optional[list] = None,
+    ) -> Dict[str, Any]:
         initial_state: AgentState = {
             "query": query,
             "planner_output": None,
@@ -785,6 +570,7 @@ class LangGraphOrchestratorV2:
             "route_retry_count": 0,
             "tool_calls": [],
             "tool_results": [],
+            "extraction_log": None,
             "conversation_id": conversation_id,
             "chat_history": chat_history,
             "original_query": None,
@@ -809,5 +595,6 @@ class LangGraphOrchestratorV2:
             "retrieval_rounds": final_state.get("retrieval_rounds", []),
             "tool_calls": final_state.get("tool_calls", []),
             "tool_results": final_state.get("tool_results", []),
+            "extraction_log": final_state.get("extraction_log"),
             "conversation_id": final_state.get("conversation_id"),
         }

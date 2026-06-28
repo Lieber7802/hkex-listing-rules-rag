@@ -85,6 +85,20 @@ class TestStructureAwareChunker:
         assert ":" in chunks[0].chunk_id
         assert "hkex-ct-001" in chunks[0].chunk_id
         assert "14A.35" in chunks[0].chunk_id
+
+    def test_chunk_document_makes_duplicate_rule_ids_unique(self):
+        chunker = StructureAwareChunker()
+        text = "1. First numbered paragraph\n\nContent.\n\n1. Second numbered paragraph\n\nMore content."
+
+        chunks = chunker.chunk_document(
+            document_id="duplicated-rules",
+            text=text,
+            source_path="test.md"
+        )
+
+        chunk_ids = [chunk.chunk_id for chunk in chunks]
+        assert len(chunk_ids) == len(set(chunk_ids))
+        assert any(chunk_id.endswith("#1") for chunk_id in chunk_ids)
     
     def test_chunk_preserves_source_path(self):
         chunker = StructureAwareChunker()

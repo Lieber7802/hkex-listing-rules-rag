@@ -8,11 +8,11 @@ Two paths:
 - LLM path: If query contains pronouns/references → use LLM to rewrite with history context
 """
 
-import os
 from typing import List, Optional
 
 from app.models.conversation import ConversationTurn
 from app.core.config import settings
+from app.core.llm_client import get_llm_client
 from app.core.logger import logger
 
 
@@ -37,6 +37,11 @@ class ContextualQueryRewriter:
 
     def __init__(self):
         self._llm_client = None
+
+    def _get_llm_client(self):
+        if self._llm_client is not None:
+            return self._llm_client
+        return get_llm_client()
 
     def rewrite(
         self, query: str, history: Optional[List[ConversationTurn]]
@@ -111,8 +116,7 @@ class ContextualQueryRewriter:
                 "Rewritten query:"
             )
 
-            # Use deepseek-chat for structured tasks (same pattern as LLMRoutePlanner)
-            model = "deepseek-chat" if settings.llm_model == "deepseek-reasoner" else settings.llm_model
+            model = settings.llm_model
 
             response = client.chat.completions.create(
                 model=model,
@@ -139,46 +143,31 @@ class ContextualQueryRewriter:
     def _heuristic_rewrite(
         self, query: str, history: List[ConversationTurn]
     ) -> str:
-        """Simple heuristic: prepend last topic from history.
-
-        This is a fallback when LLM is unavailable. It attempts to replace
-        common pronouns with the subject from the last user question.
-        """
-        # Find last user question to extract topic
         last_user_q = None
+        last_asst_a = None
         for turn in reversed(history):
-            if turn.role == "user":
+            if turn.role == "user" and last_user_q is None:
                 last_user_q = turn.content
-                break
+            if turn.role == "assistant" and last_asst_a is None:
+                last_asst_a = turn.content
 
         if not last_user_q:
             return query
 
-        # Extract a likely topic (first noun-phrase-like segment, heuristic)
-        # For Chinese: take first 10 chars after common question words
-        # For English: take first few meaningful words
-        # This is intentionally simple — LLM path handles complex cases
-        return query  # Return original as safe fallback
+        replacements = [
+            ("它", last_user_q[:30]),
+            ("这个", last_user_q[:30]),
+            ("那个", last_user_q[:30]),
+            ("该规则", last_user_q[:30]),
+            ("上述", last_user_q[:30]),
+        ]
 
-    def _get_llm_client(self):
-        """Lazy-init LLM client."""
-        if self._llm_client is not None:
-            return self._llm_client
+        rewritten = query
+        for pronoun, substitute in replacements:
+            if pronoun in rewritten:
+                rewritten = rewritten.replace(pronoun, substitute, 1)
 
-        if settings.llm_provider in ["openai", "deepseek"]:
-            try:
-                from openai import OpenAI
+        if rewritten != query:
+            logger.info(f"Heuristic rewrite: '{query}' → '{rewritten}'")
 
-                api_key = (
-                    settings.llm_api_key
-                    or os.environ.get("OPENAI_API_KEY")
-                    or os.environ.get("DEEPSEEK_API_KEY")
-                )
-                if api_key:
-                    self._llm_client = OpenAI(
-                        api_key=api_key, base_url=settings.llm_base_url
-                    )
-            except ImportError:
-                pass
-
-        return self._llm_client
+        return rewritten

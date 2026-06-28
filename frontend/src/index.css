@@ -19,3 +19,45 @@ body {
   animation: blink 1s infinite;
   color: #3b82f6;
 }
+
+.markdown-message p {
+  margin: 0.35rem 0;
+}
+
+.markdown-message p:first-child {
+  margin-top: 0;
+}
+
+.markdown-message p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-message ul,
+.markdown-message ol {
+  margin: 0.45rem 0;
+  padding-left: 1.25rem;
+}
+
+.markdown-message ul {
+  list-style-type: disc;
+}
+
+.markdown-message ol {
+  list-style-type: decimal;
+}
+
+.markdown-message li {
+  margin: 0.2rem 0;
+}
+
+.markdown-message strong {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.markdown-message code {
+  padding: 0.08rem 0.25rem;
+  border-radius: 0.25rem;
+  background: #f1f5f9;
+  font-size: 0.85em;
+}

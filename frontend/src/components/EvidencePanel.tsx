@@ -1,5 +1,5 @@
 import type { Citation } from '../types/api';
-import { FileText, ChevronDown, ChevronUp } from 'lucide-react';
+import { FileText, ChevronDown, ChevronUp, Wrench } from 'lucide-react';
 import { useState } from 'react';
 
 interface EvidencePanelProps {
@@ -11,7 +11,7 @@ export function EvidencePanel({ citations, toolResults }: EvidencePanelProps) {
   if (citations.length === 0 && toolResults.length === 0) {
     return (
       <div className="h-full flex items-center justify-center text-slate-400 text-sm">
-        <p>发送问题后，引用来源将显示在这里</p>
+        <p>Citations and tool results will appear here after a query is sent.</p>
       </div>
     );
   }
@@ -22,7 +22,7 @@ export function EvidencePanel({ citations, toolResults }: EvidencePanelProps) {
         <div>
           <h3 className="text-sm font-medium text-slate-700 mb-2 flex items-center gap-1.5">
             <FileText className="w-4 h-4" />
-            引用来源 ({citations.length})
+            Citations ({citations.length})
           </h3>
           <div className="space-y-2">
             {citations.map((c, i) => (
@@ -34,8 +34,9 @@ export function EvidencePanel({ citations, toolResults }: EvidencePanelProps) {
 
       {toolResults.length > 0 && (
         <div className="mt-4">
-          <h3 className="text-sm font-medium text-slate-700 mb-2">
-            🔧 工具结果
+          <h3 className="text-sm font-medium text-slate-700 mb-2 flex items-center gap-1.5">
+            <Wrench className="w-4 h-4" />
+            Tool Results
           </h3>
           {toolResults.map((result, i) => (
             <div key={i} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs font-mono overflow-x-auto">

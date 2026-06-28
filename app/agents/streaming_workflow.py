@@ -18,18 +18,14 @@ from app.core.logger import logger
 
 # Map LangGraph node names → SSE event types
 NODE_TO_EVENT = {
-    "llm_route_planner": "routing_complete",
-    "route_validator": "route_validated",
-    "heuristic_fallback": "routing_complete",
-    "decompose_router": None,  # skip — pass-through node
+    "planner_agent_v2": "routing_complete",
+    "tool_input_extraction": None,  # skip — internal node
     "tool_executor": "tool_executed",
     "retriever": "retrieval_complete",
     "coverage_checker": "coverage_checked",
     "evidence_selector": "evidence_selected",
     "reasoning": "answer_chunk",
     "answer_verifier": "verification_complete",
-    "task_decomposer": "decomposition_complete",
-    "decomposition_validator": None,
 }
 
 
@@ -40,12 +36,10 @@ class StreamingOrchestrator:
         self,
         index_store: Optional[IndexStore] = None,
         index_path: Optional[Path] = None,
-        use_llm_planner: bool = True,
     ):
         self.nodes = GraphNodes(
             index_store=index_store,
             index_path=index_path,
-            use_llm_planner=use_llm_planner,
         )
         self.graph = build_graph(self.nodes)
 
@@ -116,13 +110,19 @@ class StreamingOrchestrator:
                             }
                         continue
 
-                    # Special handling for reasoning (answer)
+                    # Special handling for reasoning (answer + citations)
                     if node_name == "reasoning":
                         yield {"event": "reasoning_started", "data": {}}
                         answer = state_update.get("answer", "")
                         if answer:
                             for chunk in self._chunk_answer(answer):
                                 yield {"event": "answer_chunk", "data": {"content": chunk}}
+                        citations = state_update.get("citations", [])
+                        if citations:
+                            yield {
+                                "event": "citations",
+                                "data": {"citations": [self._serialize_citation(c) for c in citations]},
+                            }
                         continue
 
                     # Generic event
@@ -145,7 +145,7 @@ class StreamingOrchestrator:
 
     def _build_event_data(self, node_name: str, state_update: Dict[str, Any]) -> Dict[str, Any]:
         """Build event-specific data payload."""
-        if node_name in ("llm_route_planner", "heuristic_fallback"):
+        if node_name == "planner_agent_v2":
             return {
                 "query_type": state_update.get("query_type"),
                 "route_summary": self._summarize_route(state_update.get("route_decision")),
@@ -155,9 +155,6 @@ class StreamingOrchestrator:
             chunks = state_update.get("retrieved_chunks", [])
             top_score = max((c.get("score", 0) for c in chunks), default=0)
             return {"num_chunks": len(chunks), "top_score": round(top_score, 3)}
-
-        if node_name == "route_validator":
-            return {"validation": state_update.get("route_validation")}
 
         if node_name == "answer_verifier":
             return {
@@ -178,6 +175,14 @@ class StreamingOrchestrator:
             return None
         text = json.dumps(output, ensure_ascii=False)
         return text[:max_len] + ("..." if len(text) > max_len else "")
+
+    @staticmethod
+    def _serialize_citation(c) -> Dict[str, Any]:
+        if hasattr(c, "model_dump"):
+            return c.model_dump()
+        if isinstance(c, dict):
+            return c
+        return dict(c)
 
     @staticmethod
     def _chunk_answer(answer: str, chunk_size: int = 100) -> list:

@@ -1,5 +1,6 @@
 import re
 import json
+from collections import Counter
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 from dataclasses import dataclass, field
@@ -61,7 +62,19 @@ class StructureAwareChunker:
                 end_pos=end_pos,
                 text=text[match.start():end_pos]
             ))
-        
+
+        section_matches = list(self.section_pattern.finditer(text))
+        for i, match in enumerate(section_matches):
+            end_pos = section_matches[i + 1].start() if i + 1 < len(section_matches) else len(text)
+            blocks.append(StructureBlock(
+                block_type='section',
+                number=match.group(1).strip(),
+                title=match.group(2).strip() if match.group(2) else None,
+                start_pos=match.start(),
+                end_pos=end_pos,
+                text=text[match.start():end_pos]
+            ))
+
         rule_matches = list(self.rule_pattern.finditer(text))
         for i, match in enumerate(rule_matches):
             end_pos = rule_matches[i + 1].start() if i + 1 < len(rule_matches) else len(text)
@@ -228,8 +241,17 @@ class StructureAwareChunker:
             chunks = self.chunk_block(block, document_id, source_path)
             all_chunks.extend(chunks)
         
+        self._ensure_unique_chunk_ids(all_chunks)
         logger.info(f"Created {len(all_chunks)} chunks for document {document_id}")
         return all_chunks
+
+    def _ensure_unique_chunk_ids(self, chunks: List[Chunk]) -> None:
+        seen: Counter[str] = Counter()
+        for chunk in chunks:
+            base_id = chunk.chunk_id
+            seen[base_id] += 1
+            if seen[base_id] > 1:
+                chunk.chunk_id = f"{base_id}#{seen[base_id] - 1}"
 
 
 def save_chunks(chunks: List[Chunk], output_dir: Path) -> Path:

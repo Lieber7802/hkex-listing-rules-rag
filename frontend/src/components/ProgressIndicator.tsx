@@ -27,7 +27,7 @@ export function ProgressIndicator({ steps, isStreaming }: ProgressIndicatorProps
       {isStreaming && steps.every(s => s.status === 'done') && (
         <div className="flex items-center gap-2 text-xs text-slate-400">
           <Loader2 className="w-3 h-3 text-blue-500 animate-spin" />
-          <span>生成回答中...</span>
+          <span>Generating answer...</span>
         </div>
       )}
     </div>

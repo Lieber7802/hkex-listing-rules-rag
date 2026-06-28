@@ -6,10 +6,10 @@ Converts conversation history into formats suitable for LLM injection:
 """
 
 from typing import Dict, List, Optional, Tuple
-import os
 
 from app.models.conversation import ConversationTurn
 from app.core.config import settings
+from app.core.llm_client import get_llm_client
 from app.core.logger import logger
 
 
@@ -22,7 +22,7 @@ class HistoryFormatter:
     """
 
     def __init__(self):
-        self._llm_client = None
+        pass
 
     def format_as_messages(
         self, turns: List[ConversationTurn], max_turns: int = 5
@@ -90,7 +90,7 @@ class HistoryFormatter:
             return None
 
         # Try LLM-based summary
-        client = self._get_llm_client()
+        client = get_llm_client()
         if client:
             return self._llm_summarize(older_turns, client)
 
@@ -136,26 +136,3 @@ class HistoryFormatter:
         except Exception as e:
             logger.warning(f"LLM summary generation failed: {e}")
             return self._fallback_summarize(turns)
-
-    def _get_llm_client(self):
-        """Lazy-init LLM client (same pattern as ReasoningAgent)."""
-        if self._llm_client is not None:
-            return self._llm_client
-
-        if settings.llm_provider in ["openai", "deepseek"]:
-            try:
-                from openai import OpenAI
-
-                api_key = (
-                    settings.llm_api_key
-                    or os.environ.get("OPENAI_API_KEY")
-                    or os.environ.get("DEEPSEEK_API_KEY")
-                )
-                if api_key:
-                    self._llm_client = OpenAI(
-                        api_key=api_key, base_url=settings.llm_base_url
-                    )
-            except ImportError:
-                pass
-
-        return self._llm_client

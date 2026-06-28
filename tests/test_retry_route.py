@@ -1,76 +1,72 @@
+"""Tests for simplified V2 route paths (retry/fallback removed, planner-first)."""
+
 import pytest
 from app.agents.langgraph_workflow_v2 import (
     LangGraphOrchestratorV2,
-    should_retry_route,
+    should_route,
+    tool_mode_router,
 )
-from app.schemas.planning import RouteValidationResult
+from app.schemas.planning import RouteDecision, ToolDecision
 
 
-class TestShouldRetryRoute:
-
-    def test_continue_when_no_validation(self):
-        state = {"route_validation": None, "route_retry_count": 0}
-        assert should_retry_route(state) == "continue"
-
-    def test_continue_when_valid(self):
-        validation = RouteValidationResult(
-            is_valid=True, should_retry=False, should_fallback=False
+class TestShouldRoute:
+    def test_tool_query_routes_to_execute_tool(self):
+        route = RouteDecision(
+            query_type="direct",
+            intent="calculation_required",
+            tool_decision=ToolDecision(requires_tool=True, tool_name="size_test_calculator"),
         )
-        state = {"route_validation": validation.model_dump(), "route_retry_count": 0}
-        assert should_retry_route(state) == "continue"
+        state = {"route_decision": route.model_dump()}
+        assert should_route(state) == "execute_tool"
 
-    def test_retry_when_should_retry(self):
-        validation = RouteValidationResult(
-            is_valid=False,
-            should_retry=True,
-            should_fallback=False,
-            conflicts=["one conflict"],
+    def test_non_tool_query_routes_to_retrieve(self):
+        route = RouteDecision(
+            query_type="direct",
+            intent="rule_lookup",
+            tool_decision=ToolDecision(requires_tool=False),
         )
-        state = {"route_validation": validation.model_dump(), "route_retry_count": 0}
-        assert should_retry_route(state) == "retry"
+        state = {"route_decision": route.model_dump()}
+        assert should_route(state) == "retrieve"
 
-    def test_fallback_when_should_fallback(self):
-        validation = RouteValidationResult(
-            is_valid=False,
-            should_retry=False,
-            should_fallback=True,
-            conflicts=["c1", "c2", "c3"],
+    def test_no_route_decision_defaults_to_retrieve(self):
+        assert should_route({"route_decision": None}) == "retrieve"
+
+
+class TestToolModeRouter:
+    def test_tool_only_routes_to_select(self):
+        route = RouteDecision(
+            query_type="direct",
+            tool_decision=ToolDecision(requires_tool=True, tool_mode="tool_only"),
         )
-        state = {"route_validation": validation.model_dump(), "route_retry_count": 0}
-        assert should_retry_route(state) == "fallback"
+        state = {"route_decision": route.model_dump()}
+        assert tool_mode_router(state) == "select"
 
-    def test_fallback_when_retry_exhausted(self):
-        """After 1 retry, should_retry becomes fallback."""
-        validation = RouteValidationResult(
-            is_valid=False,
-            should_retry=True,
-            should_fallback=False,
-            conflicts=["one conflict"],
+    def test_tool_plus_retrieval_routes_to_retrieve(self):
+        route = RouteDecision(
+            query_type="direct",
+            tool_decision=ToolDecision(requires_tool=True, tool_mode="tool_plus_retrieval"),
         )
-        state = {"route_validation": validation.model_dump(), "route_retry_count": 1}
-        assert should_retry_route(state) == "fallback"
+        state = {"route_decision": route.model_dump()}
+        assert tool_mode_router(state) == "retrieve"
+
+    def test_no_route_defaults_to_retrieve(self):
+        assert tool_mode_router({"route_decision": None}) == "retrieve"
 
 
-class TestHeuristicFallbackIntegration:
-
-    def test_conflicting_query_still_produces_valid_result(self):
-        """A query that would cause route conflicts should still complete
-        via the fallback path and produce a valid result."""
+class TestOrchestratorIntegration:
+    def test_simple_query_completes_via_heuristic_path(self):
         orch = LangGraphOrchestratorV2(use_llm_planner=False)
+        result = orch.process_query("What is Rule 14A.35?", use_llm_planner=False)
 
+        assert result["query_type"] == "direct"
+        assert result["answer"] is not None
+
+    def test_hybrid_query_still_works(self):
+        orch = LangGraphOrchestratorV2(use_llm_planner=False)
         result = orch.process_query(
-            "Calculate the size test ratio and compare Rule 14A versus Rule 14",
+            "Calculate the size test ratio for this acquisition",
             use_llm_planner=False,
         )
 
         assert result["answer"] is not None
         assert result["route_decision"] is not None
-
-    def test_simple_query_uses_continue_path(self):
-        """A simple query should pass through route validation without retry/fallback."""
-        orch = LangGraphOrchestratorV2(use_llm_planner=False)
-
-        result = orch.process_query("What is Rule 14A.35?", use_llm_planner=False)
-
-        assert result["query_type"] == "direct"
-        assert result["answer"] is not None

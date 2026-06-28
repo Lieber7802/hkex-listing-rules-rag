@@ -1,6 +1,6 @@
 """Conversation data models for multi-turn dialog support."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 import uuid
@@ -11,7 +11,7 @@ class ConversationTurn(BaseModel):
 
     role: str = Field(..., description="Role: 'user' or 'assistant'")
     content: str = Field(..., description="Message content (query or answer)")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
     metadata: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Optional metadata (citations, tool_calls for assistant turns)",
@@ -28,8 +28,8 @@ class ConversationSession(BaseModel):
     turns: List[ConversationTurn] = Field(
         default_factory=list, description="Ordered list of conversation turns"
     )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_active: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    last_active: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Session-level metadata (e.g., dominant_topic)",

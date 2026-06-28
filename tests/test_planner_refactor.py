@@ -1,186 +1,122 @@
 import pytest
 from app.schemas.planning import RouteDecision, ToolDecision, DecompositionPlan, SubTask
-from app.agents.llm_route_planner import LLMRoutePlanner
-from app.agents.route_validator import HeuristicRouteValidator
-from app.agents.task_decomposer import TaskDecomposer
-from app.agents.decomposition_validator import DecompositionValidator
+from app.agents.planner_agent import PlannerAgent
+from app.schemas.query import PlannerOutput
 
 
-class TestLLMRoutePlanner:
-    
-    def test_simple_query_does_not_require_decomposition(self):
-        planner = LLMRoutePlanner()
+class TestPlannerAgentRouteDecision:
+    def test_simple_query_is_direct(self):
+        planner = PlannerAgent()
         result = planner.plan("What is Rule 14A.35?")
-        
-        assert isinstance(result, RouteDecision)
-        assert result.query_type in ["direct", "multi_hop"]
-        assert result.requires_decomposition is False
-        assert result.retrieval_strategy == "single_pass"
-    
-    def test_comparison_query_requires_decomposition(self):
-        planner = LLMRoutePlanner()
+
+        assert isinstance(result, PlannerOutput)
+        assert result.query_type == "direct"
+        assert result.intent == "rule_lookup"
+
+    def test_comparison_query_is_multi_hop(self):
+        planner = PlannerAgent()
         result = planner.plan("Compare disclosure requirements for connected and notifiable transactions")
-        
-        assert isinstance(result, RouteDecision)
+
+        assert isinstance(result, PlannerOutput)
         assert result.query_type == "multi_hop"
-        assert result.requires_decomposition is True
         assert result.intent == "comparison"
-    
+
     def test_calculation_query_requires_tool(self):
-        planner = LLMRoutePlanner()
+        planner = PlannerAgent()
         result = planner.plan("Calculate the size test ratio for this transaction")
-        
-        assert isinstance(result, RouteDecision)
-        assert result.tool_decision.requires_tool is True
-        assert result.tool_decision.tool_name in ["size_test_calculator", "SizeTestCalculator"]
-    
-    def test_fallback_on_llm_failure(self):
-        planner = LLMRoutePlanner(llm_client=None)
-        result = planner.plan("What is Rule 14A.35?")
-        
-        assert isinstance(result, RouteDecision)
-        assert result.fallback_used is True
-    
-    def test_output_contains_validation_warnings(self):
-        planner = LLMRoutePlanner()
-        result = planner.plan("What is Rule 14A.35?")
-        
-        assert isinstance(result.validation_warnings, list)
 
+        assert isinstance(result, PlannerOutput)
+        assert result.requires_tool is True
+        assert result.tool_name == "size_test_calculator"
 
-class TestHeuristicRouteValidator:
-    
-    def test_detects_rule_number_conflict(self):
-        validator = HeuristicRouteValidator()
-        decision = RouteDecision(
-            query_type="multi_hop",
-            intent="comparison",
-            requires_decomposition=True,
-            retrieval_strategy="targeted_iterative"
+    def test_planner_output_converts_to_route_decision(self):
+        planner = PlannerAgent()
+        planner_output = planner.plan("What is Rule 14A.35?")
+
+        tool_decision = ToolDecision(
+            requires_tool=planner_output.requires_tool,
+            tool_name=planner_output.tool_name,
+            tool_mode=planner_output.tool_mode if planner_output.requires_tool else "none",
         )
-        query = "What is Rule 14A.35?"
-        
-        result = validator.validate(decision, query)
-        
-        assert result.is_valid is False or len(result.warnings) > 0
-    
-    def test_detects_comparison_keyword_conflict(self):
-        validator = HeuristicRouteValidator()
-        decision = RouteDecision(
-            query_type="direct",
-            intent="rule_lookup",
-            requires_decomposition=False,
-            retrieval_strategy="single_pass"
-        )
-        query = "Compare Rule 14A and Rule 14"
-        
-        result = validator.validate(decision, query)
-        
-        assert result.is_valid is False or len(result.warnings) > 0
-    
-    def test_detects_tool_keyword_conflict(self):
-        validator = HeuristicRouteValidator()
-        decision = RouteDecision(
-            query_type="direct",
-            intent="rule_lookup",
-            requires_decomposition=False,
-            retrieval_strategy="single_pass",
-            tool_decision=ToolDecision(requires_tool=False)
-        )
-        query = "Calculate the size test ratio"
-        
-        result = validator.validate(decision, query)
-        
-        assert result.is_valid is False or len(result.warnings) > 0
 
+        route = RouteDecision(
+            query_type=planner_output.query_type,
+            intent=planner_output.intent,
+            retrieval_strategy=planner_output.retrieval_strategy,
+            tool_decision=tool_decision,
+            answer_format=planner_output.answer_format,
+            route_reason=planner_output.reason,
+            sub_queries=list(planner_output.sub_queries),
+        )
 
-class TestTaskDecomposer:
-    
-    def test_decomposes_comparison_query(self):
-        decomposer = TaskDecomposer()
+        assert isinstance(route, RouteDecision)
+        assert route.query_type == planner_output.query_type
+        assert route.intent == planner_output.intent
+
+    def test_route_decision_to_planner_output(self):
         route = RouteDecision(
             query_type="multi_hop",
             intent="comparison",
-            requires_decomposition=True,
-            retrieval_strategy="targeted_iterative"
+            retrieval_strategy="multi_query",
+            sub_queries=["Query A?", "Query B?"],
         )
-        query = "Compare disclosure requirements for connected and notifiable transactions"
-        
-        result = decomposer.decompose(query, route)
-        
-        assert isinstance(result, DecompositionPlan)
-        assert len(result.subtasks) >= 2
-        assert all(isinstance(task, SubTask) for task in result.subtasks)
-    
-    def test_subtasks_have_dependencies(self):
-        decomposer = TaskDecomposer()
-        route = RouteDecision(
-            query_type="multi_hop",
-            intent="comparison",
-            requires_decomposition=True,
-            retrieval_strategy="targeted_iterative"
-        )
-        query = "Compare disclosure requirements for connected and notifiable transactions"
-        
-        result = decomposer.decompose(query, route)
-        
-        for task in result.subtasks:
-            assert task.id is not None
-            assert task.goal is not None
-            assert task.query is not None
-    
-    def test_fallback_on_llm_failure(self):
-        decomposer = TaskDecomposer(llm_client=None)
-        route = RouteDecision(
-            query_type="multi_hop",
-            intent="comparison",
-            requires_decomposition=True,
-            retrieval_strategy="targeted_iterative"
-        )
-        query = "Compare A and B"
-        
-        result = decomposer.decompose(query, route)
-        
-        assert isinstance(result, DecompositionPlan)
-        assert result.fallback_used is True
+
+        po = route.to_planner_output()
+
+        assert po.query_type == "multi_hop"
+        assert po.intent == "comparison"
+        assert po.sub_queries == ["Query A?", "Query B?"]
+        assert po.retrieval_strategy == "multi_query"
 
 
-class TestDecompositionValidator:
-    
-    def test_detects_incomplete_subtasks(self):
-        validator = DecompositionValidator()
+class TestSimplifiedSubTask:
+    def test_subtask_minimal_fields(self):
+        task = SubTask(id="t1", type="retrieval", query="What is Rule 14?")
+
+        assert task.id == "t1"
+        assert task.type == "retrieval"
+        assert task.query == "What is Rule 14?"
+
+    def test_decomposition_plan_simplified(self):
         plan = DecompositionPlan(
             subtasks=[
-                SubTask(id="t1", type="retrieval", goal="", query="What is Rule 14A?", depends_on=[])
-            ]
+                SubTask(id="t1", type="retrieval", query="Query 1?"),
+                SubTask(id="t2", type="retrieval", query="Query 2?"),
+            ],
+            decomposition_reason="test",
         )
-        
-        result = validator.validate(plan)
-        
-        assert len(result.warnings) > 0 or len(result.errors) > 0
-    
-    def test_detects_dependency_cycles(self):
-        validator = DecompositionValidator()
-        plan = DecompositionPlan(
-            subtasks=[
-                SubTask(id="t1", type="retrieval", goal="Goal 1", query="Query 1", depends_on=["t2"]),
-                SubTask(id="t2", type="retrieval", goal="Goal 2", query="Query 2", depends_on=["t1"])
-            ]
+
+        assert len(plan.subtasks) == 2
+        assert plan.decomposition_reason == "test"
+
+
+class TestToolInputExtraction:
+    def test_rule_lookup_extraction(self):
+        from app.agents.tool_input_extraction_node import extract_tool_inputs
+
+        inputs = extract_tool_inputs("What does Rule 14A.35 say about connected transactions?", "rule_lookup")
+
+        assert "rule_number" in inputs
+        assert inputs["rule_number"] == "14A.35"
+
+    def test_transaction_classifier_extraction(self):
+        from app.agents.tool_input_extraction_node import extract_tool_inputs
+
+        inputs = extract_tool_inputs(
+            "Classify a connected acquisition with 75% ratio",
+            "transaction_classifier",
         )
-        
-        result = validator.validate(plan)
-        
-        assert result.has_cycles is True
-    
-    def test_validates_comparison_has_two_retrieval_tasks(self):
-        validator = DecompositionValidator()
-        plan = DecompositionPlan(
-            subtasks=[
-                SubTask(id="t1", type="retrieval", goal="Get A", query="A", depends_on=[])
-            ]
+
+        assert "highest_ratio" in inputs
+        assert inputs["highest_ratio"] == 75
+
+    def test_size_test_extraction(self):
+        from app.agents.tool_input_extraction_node import extract_tool_inputs
+
+        inputs = extract_tool_inputs(
+            "Calculate size test for an acquisition: assets 500 million, "
+            "revenue 200 million, profit 50 million",
+            "size_test_calculator",
         )
-        route = RouteDecision(query_type="multi_hop", intent="comparison")
-        
-        result = validator.validate(plan, route)
-        
-        assert len(result.warnings) > 0
+
+        assert isinstance(inputs, dict)

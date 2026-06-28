@@ -16,20 +16,18 @@ class Settings(BaseSettings):
     demo_dir: Path = Field(default=Path("data/demo"), description="Demo data directory")
     
     embedding_provider: str = Field(default="ollama", description="Embedding provider: ollama or sentence-transformers")
-    embedding_model: str = Field(default="bge-m3", description="Embedding model name (for ollama: bge-m3, bge-large, etc.)")
+    embedding_model: str = Field(default="qwen3-embedding:4b", description="Embedding model name (e.g. qwen3-embedding:4b, bge-m3)")
     ollama_base_url: str = Field(default="http://127.0.0.1:11434", description="Ollama API base URL")
     
     llm_provider: str = Field(default="deepseek", description="LLM provider: deepseek, openai, etc.")
-    llm_model: str = Field(default="deepseek-reasoner", description="LLM model name")
+    llm_model: str = Field(default="deepseek-v4-flash", description="LLM model name")
     llm_api_key: Optional[str] = Field(default=None, description="LLM API key")
     llm_base_url: Optional[str] = Field(default="https://api.deepseek.com", description="LLM base URL")
     
     retrieval_top_k_bm25: int = Field(default=20, description="Top-k for BM25 retrieval")
     retrieval_top_k_dense: int = Field(default=20, description="Top-k for dense retrieval")
     retrieval_top_k_final: int = Field(default=10, description="Final top-k after fusion")
-    bm25_weight: float = Field(default=0.4, description="Weight for BM25 scores (legacy, kept for backward compat)")
-    dense_weight: float = Field(default=0.6, description="Weight for dense scores (legacy, kept for backward compat)")
-    rrf_k: int = Field(default=60, description="RRF smoothing constant k (default 60 per original paper)")
+    rrf_k: int = Field(default=20, description="RRF smoothing constant k (lower = more score discrimination)")
     
     chunk_max_chars: int = Field(default=1500, description="Maximum characters per chunk")
     chunk_overlap_chars: int = Field(default=100, description="Character overlap for long sections")
