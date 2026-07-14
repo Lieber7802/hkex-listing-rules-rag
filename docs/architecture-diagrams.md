@@ -2,6 +2,46 @@
 
 > 本文档详细描述系统的整体架构、LangGraph 工作流、路由决策逻辑和数据流转。
 
+## Current Production Workflow (Authoritative)
+
+The production `/chat` and `/chat/stream` endpoints use
+`app/agents/agentic_workflow.py`. It is an eight-node LangGraph workflow with a
+heuristic `PlannerAgent`; it does not use the removed LLM route validator or task
+decomposer.
+
+```mermaid
+flowchart TD
+    P[planner_agent] --> R{should_route}
+    R -->|execute_tool| X[tool_input_extraction]
+    X --> T[tool_executor]
+    T --> M{tool_mode_router}
+    M -->|tool_only| E[evidence_selector]
+    M -->|tool_plus_retrieval| H[retriever]
+    R -->|retrieve| H
+    H --> C[coverage_checker]
+    C -->|covered or round limit| E
+    C -->|coverage gap| H
+    E --> G[reasoning]
+    G --> V[answer_verifier]
+    V --> Z[END]
+```
+
+On the first retrieval, `retriever` uses the planner query or sub-queries. When
+coverage is incomplete and the two-round limit has not been reached, the same
+node switches to targeted mode: it rewrites `retrieval_targets` with the
+heuristic `QueryRewriter`, retrieves only the missing topics, and excludes chunk
+IDs already accumulated in state. Each round records its queries, new chunk IDs,
+and before/after coverage.
+
+`evidence_selector` is the evidence boundary for downstream processing. Answer
+synthesis, citation formatting, and answer verification all consume the selected
+chunks. Tool-only requests bypass retrieval and coverage as before.
+
+> The diagrams below document earlier prototypes and are retained for historical
+> context. References to `llm_route_planner_node`, `route_validator_node`,
+> `task_decomposer_node`, or a standalone `second_retrieval_node` are not the
+> current production graph.
+
 ---
 
 ## 1. 系统总体架构

@@ -17,6 +17,7 @@ class AgentState(TypedDict):
     error: Optional[str]
     needs_second_retrieval: bool
     iteration_count: int
+    current_retrieval: Optional[Dict[str, Any]]
     coverage_assessment: Optional[Dict[str, Any]]
     selected_evidence: Optional[Dict[str, Any]]
     verification_result: Optional[Dict[str, Any]]

@@ -9,8 +9,10 @@ import json
 from typing import Generator, Dict, Any, Optional
 from pathlib import Path
 
-from app.agents.langgraph_workflow_v2 import GraphNodes, build_graph, AgentState
+from app.agents.agentic_workflow import GraphNodes, build_graph, AgentState
 from app.schemas.planning import RouteDecision
+from app.retrieval.embedder import BaseEmbedder
+from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.index_store import IndexStore
 from app.core.config import settings
 from app.core.logger import logger
@@ -18,7 +20,7 @@ from app.core.logger import logger
 
 # Map LangGraph node names → SSE event types
 NODE_TO_EVENT = {
-    "planner_agent_v2": "routing_complete",
+    "planner_agent": "routing_complete",
     "tool_input_extraction": None,  # skip — internal node
     "tool_executor": "tool_executed",
     "retriever": "retrieval_complete",
@@ -36,10 +38,14 @@ class StreamingOrchestrator:
         self,
         index_store: Optional[IndexStore] = None,
         index_path: Optional[Path] = None,
+        embedder: Optional[BaseEmbedder] = None,
+        retriever: Optional[HybridRetriever] = None,
     ):
         self.nodes = GraphNodes(
             index_store=index_store,
             index_path=index_path,
+            embedder=embedder,
+            retriever=retriever,
         )
         self.graph = build_graph(self.nodes)
 
@@ -65,6 +71,7 @@ class StreamingOrchestrator:
             "error": None,
             "needs_second_retrieval": False,
             "iteration_count": 0,
+            "current_retrieval": None,
             "coverage_assessment": None,
             "selected_evidence": None,
             "verification_result": None,
@@ -78,6 +85,7 @@ class StreamingOrchestrator:
             "route_retry_count": 0,
             "tool_calls": [],
             "tool_results": [],
+            "extraction_log": None,
             "conversation_id": conversation_id,
             "chat_history": chat_history,
             "original_query": None,
@@ -145,7 +153,7 @@ class StreamingOrchestrator:
 
     def _build_event_data(self, node_name: str, state_update: Dict[str, Any]) -> Dict[str, Any]:
         """Build event-specific data payload."""
-        if node_name == "planner_agent_v2":
+        if node_name == "planner_agent":
             return {
                 "query_type": state_update.get("query_type"),
                 "route_summary": self._summarize_route(state_update.get("route_decision")),
