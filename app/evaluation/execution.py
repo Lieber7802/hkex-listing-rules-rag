@@ -102,7 +102,10 @@ def run_experiment(
     result_paths: dict[str, Path] = {}
     for system_id in systems:
         config = SYSTEM_CONFIGS[system_id]
-        runner = TraditionalHybridRAGRunner(config) if system_id == "B3" else AgenticRAGRunner(config)
+        runner = (
+            TraditionalHybridRAGRunner(config, index_path=index_path)
+            if system_id == "B3" else AgenticRAGRunner(config)
+        )
         result_path = output_dir / f"{system_id}_results.jsonl"
         rows: list[EvaluationRunRow] = read_jsonl(result_path, EvaluationRunRow) if result_path.exists() else []
         completed = {row.case_id for row in rows if row.row_type.value in {"single_turn", "aggregate"}}

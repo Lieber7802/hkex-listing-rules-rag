@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 from app.agents.reasoning_agent import ReasoningAgent
@@ -18,15 +19,21 @@ class TraditionalHybridRAGRunner:
 
     def __init__(
         self, config: ExperimentConfig, retriever: Optional[HybridRetriever] = None,
-        reasoning_agent: Optional[ReasoningAgent] = None,
+        reasoning_agent: Optional[ReasoningAgent] = None, index_path: Optional[Path] = None,
     ) -> None:
         self.config = config
         self._retriever = retriever
         self._reasoning = reasoning_agent or ReasoningAgent()
+        self._index_path = index_path
 
     def _get_retriever(self) -> HybridRetriever:
         if self._retriever is None:
-            self._retriever = HybridRetriever(IndexStore.load(__import__("app.core.config", fromlist=["settings"]).settings.indexes_dir))
+            if self._index_path is not None:
+                self._retriever = HybridRetriever(IndexStore.load(self._index_path))
+            else:
+                self._retriever = HybridRetriever(
+                    IndexStore.load(__import__("app.core.config", fromlist=["settings"]).settings.indexes_dir)
+                )
         return self._retriever
 
     def run_case(self, case: BenchmarkCase, run_id: str) -> Sequence[EvaluationRunRow]:
