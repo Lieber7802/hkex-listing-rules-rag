@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
 from app.agents.agentic_workflow import AgenticRAGOrchestrator
@@ -13,17 +14,22 @@ class AgenticRAGRunner:
     def __init__(
         self, config: ExperimentConfig,
         orchestrator_factory: Optional[Callable[..., AgenticRAGOrchestrator]] = None,
+        index_path: Optional[Path] = None,
     ) -> None:
         self.config = config
         self._factory = orchestrator_factory or AgenticRAGOrchestrator
+        self.index_path = Path(index_path) if index_path is not None else None
 
     def _orchestrator(self) -> AgenticRAGOrchestrator:
-        return self._factory(
-            use_llm_planner=self.config.planner_mode == "llm_primary",
-            enable_tools=self.config.enable_tools,
-            enable_coverage_retry=self.config.enable_coverage_retry,
-            max_retrieval_rounds=self.config.max_retrieval_rounds,
-        )
+        options = {
+            "use_llm_planner": self.config.planner_mode == "llm_primary",
+            "enable_tools": self.config.enable_tools,
+            "enable_coverage_retry": self.config.enable_coverage_retry,
+            "max_retrieval_rounds": self.config.max_retrieval_rounds,
+        }
+        if self.index_path is not None:
+            options["index_path"] = self.index_path
+        return self._factory(**options)
 
     def run_case(self, case: BenchmarkCase, run_id: str) -> Sequence[EvaluationRunRow]:
         orchestrator = self._orchestrator()

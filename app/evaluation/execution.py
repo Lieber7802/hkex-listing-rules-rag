@@ -104,7 +104,7 @@ def run_experiment(
         config = SYSTEM_CONFIGS[system_id]
         runner = (
             TraditionalHybridRAGRunner(config, index_path=index_path)
-            if system_id == "B3" else AgenticRAGRunner(config)
+            if system_id == "B3" else AgenticRAGRunner(config, index_path=index_path)
         )
         result_path = output_dir / f"{system_id}_results.jsonl"
         rows: list[EvaluationRunRow] = read_jsonl(result_path, EvaluationRunRow) if result_path.exists() else []

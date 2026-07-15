@@ -29,6 +29,13 @@ def test_agentic_runner_records_ablation_configuration_and_case_row():
     assert rows[0].answer
 
 
+def test_agentic_runner_passes_explicit_index_path_to_orchestrator():
+    index_path = Path("frozen-index")
+    runner = AgenticRAGRunner(SYSTEM_CONFIGS["A1"], FakeOrchestrator, index_path=index_path)
+    orchestrator = runner._orchestrator()
+    assert orchestrator.kwargs["index_path"] == index_path
+
+
 def test_report_export_writes_required_artifacts(tmp_path: Path):
     case = answerable_case()
     rows = AgenticRAGRunner(SYSTEM_CONFIGS["A1"], FakeOrchestrator).run_case(case, "run-1")
