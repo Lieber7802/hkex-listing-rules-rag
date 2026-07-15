@@ -210,7 +210,7 @@ class TestEdgeCases:
         assert result["ratios"]["profits_ratio"] == 60.0
         assert any("negative" in w.lower() or "profit" in w.lower() for w in result["warnings"])
 
-    def test_zero_denominator_returns_error(self, tool):
+    def test_zero_denominator_returns_partial_result(self, tool):
         """Zero issuer denominator → validation error (not a crash)."""
         result = tool.run({
             "issuer_market_cap": 0,
@@ -226,7 +226,10 @@ class TestEdgeCases:
             "transaction_type": "acquisition",
         })
 
-        assert result.get("error") is not None
+        assert result.get("error") is None
+        assert result["partial_result"] is True
+        assert "consideration_ratio" not in result["ratios"]
+        assert result["ratios"]["assets_ratio"] == 30.0
 
     def test_very_high_ratio_adds_warning(self, tool):
         """Ratio > 500% should trigger a warning."""

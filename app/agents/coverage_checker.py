@@ -116,7 +116,7 @@ class CoverageChecker:
         supporting = []
 
         # Detect if sub_task contains specific rule references
-        has_rule_ref = bool(re.search(r'\b\d+[A-Z]?\.\d+\b', sub_task))
+        has_rule_ref = bool(re.search(r'\b\d+[A-Z]?\.\d+\b', sub_task, flags=re.IGNORECASE))
 
         for result in results:
             # Choose score based on query type
@@ -129,8 +129,10 @@ class CoverageChecker:
                 base_score = result.dense_score
                 threshold = self.min_support_score
             else:
-                # Default: use fused score
-                base_score = result.score
+                # RRF is a ranking score, not a calibrated support score.  The
+                # normalized lexical/semantic signals are comparable to the
+                # configured threshold; either one can support a general task.
+                base_score = max(result.bm25_score, result.dense_score)
                 threshold = self.min_support_score
 
             if base_score < threshold:
@@ -183,10 +185,10 @@ class CoverageChecker:
         """
         # Extract all rule number patterns from sub-task
         rule_pattern = r'\b\d+[A-Z]?\.\d+[A-Z]?\b'
-        task_rules = re.findall(rule_pattern, sub_task)
+        task_rules = re.findall(rule_pattern, sub_task, flags=re.IGNORECASE)
 
         # Direct match
-        if rule_number in task_rules:
+        if rule_number.lower() in {rule.lower() for rule in task_rules}:
             return True
 
         # Fuzzy match: check if rule number appears in text (case-insensitive)

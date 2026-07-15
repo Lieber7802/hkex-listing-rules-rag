@@ -135,6 +135,10 @@ class TestSessionStore:
         assert session.conversation_id != "nonexistent-id-12345"
         assert session.is_empty
 
+    def test_rejects_path_traversal_conversation_id(self, store):
+        with pytest.raises(ValueError, match="invalid conversation_id"):
+            store.get_or_create("../another-session")
+
     def test_append_turn(self, store):
         session = store.get_or_create(None)
         cid = session.conversation_id

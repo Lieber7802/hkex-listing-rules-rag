@@ -28,6 +28,7 @@ class AgentState(TypedDict):
     route_validation: Optional[Dict[str, Any]]
     decomposition_validation: Optional[Dict[str, Any]]
     use_llm_planner: bool
+    enable_tools: bool
     route_retry_count: int
     tool_calls: Annotated[List[Dict[str, Any]], add]
     tool_results: Annotated[List[Dict[str, Any]], add]

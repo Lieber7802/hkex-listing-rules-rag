@@ -40,11 +40,13 @@ class VectorIndex:
         query_embedding = query_embedding.reshape(1, -1).astype(np.float32)
         faiss.normalize_L2(query_embedding)
         
-        scores, indices = self.index.search(query_embedding, top_k)
+        scores, indices = self.index.search(
+            query_embedding, min(top_k, len(self.chunk_ids))
+        )
         
         results = []
         for score, idx in zip(scores[0], indices[0]):
-            if idx < len(self.chunk_ids):
+            if 0 <= idx < len(self.chunk_ids):
                 results.append((self.chunk_ids[idx], float(score)))
         
         return results

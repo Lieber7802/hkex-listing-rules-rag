@@ -112,7 +112,7 @@ class SessionStore:
             ]
             for sid in expired_ids:
                 del self._sessions[sid]
-                filepath = self._storage_path / f"{sid}.jsonl"
+                filepath = self._session_path(sid)
                 if filepath.exists():
                     try:
                         filepath.unlink()
@@ -143,7 +143,7 @@ class SessionStore:
     def _flush_turn(self, conversation_id: str, turn: ConversationTurn) -> None:
         """Append a single turn to the session's JSONL file."""
         try:
-            filepath = self._storage_path / f"{conversation_id}.jsonl"
+            filepath = self._session_path(conversation_id)
             with open(filepath, "a", encoding="utf-8") as f:
                 f.write(turn.model_dump_json() + "\n")
         except OSError as e:
@@ -154,7 +154,7 @@ class SessionStore:
 
         Must be called under self._lock.
         """
-        filepath = self._storage_path / f"{conversation_id}.jsonl"
+        filepath = self._session_path(conversation_id)
         if not filepath.exists():
             return None
 
@@ -168,6 +168,16 @@ class SessionStore:
 
         session.last_active = datetime.now(tz=timezone.utc)
         return session
+
+    def _session_path(self, conversation_id: str) -> Path:
+        """Return a contained JSONL path or reject traversal before filesystem use."""
+        if not conversation_id or Path(conversation_id).name != conversation_id:
+            raise ValueError("invalid conversation_id")
+        root = self._storage_path.resolve()
+        candidate = (root / f"{conversation_id}.jsonl").resolve()
+        if candidate.parent != root:
+            raise ValueError("invalid conversation_id")
+        return candidate
 
     def _load_from_disk(self) -> None:
         """(Legacy/debug) Load all sessions from disk into memory.

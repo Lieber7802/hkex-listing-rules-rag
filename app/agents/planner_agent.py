@@ -80,7 +80,7 @@ class PlannerAgent:
             'multi_condition': [r'and', r'as well as', r'both'],
         }
     
-    def plan(self, query: str) -> PlannerOutput:
+    def plan(self, query: str, *, use_llm: bool = True) -> PlannerOutput:
         query_lower = query.lower().strip()
         
         query_type = self._classify_query(query_lower)
@@ -91,7 +91,11 @@ class PlannerAgent:
         
         reason = self._generate_reason(query_type, sub_queries, needs_second_retrieval)
         
-        intent = self._classify_intent(query_lower)
+        intent, planner_reason, fallback_used = self._classify_intent(
+            query_lower, use_llm=use_llm
+        )
+        if planner_reason:
+            reason = f"{reason}; {planner_reason}"
         
         sub_tasks = self._extract_sub_tasks(query, query_type, sub_queries)
         
@@ -121,16 +125,19 @@ class PlannerAgent:
             tool_mode=tool_mode,
         )
         
-        logger.info(f"Planner classified query as '{query_type}' with intent '{intent}'")
+        logger.info(
+            "Planner classified query as '%s' with intent '%s' (fallback=%s)",
+            query_type, intent, fallback_used,
+        )
         return output
     
     def _get_llm_client(self) -> Optional[Any]:
         return get_llm_client()
 
-    def _classify_intent_with_llm(self, query: str) -> str:
+    def _classify_intent_with_llm(self, query: str) -> Optional[str]:
         client = self._get_llm_client()
         if client is None:
-            return "general"
+            return None
         valid_intents = [
             "rule_lookup", "obligation_summary", "comparison",
             "eligibility_check", "procedure_flow", "calculation_required", "general"
@@ -157,24 +164,46 @@ class PlannerAgent:
                 return result
         except Exception as e:
             logger.warning(f"LLM intent classification failed: {e}")
-        return "general"
+        return None
 
-    def _classify_intent(self, query_lower: str) -> str:
+    def _classify_intent_heuristically(self, query_lower: str) -> str:
         priority_intents = ['comparison', 'calculation_required']
         for intent in priority_intents:
             if intent in self.intent_patterns:
                 for pattern in self.intent_patterns[intent]:
-                    if re.search(pattern, query_lower):
+                    if re.search(pattern, query_lower, flags=re.IGNORECASE):
                         return intent
 
         for intent, patterns in self.intent_patterns.items():
             if intent in priority_intents:
                 continue
             for pattern in patterns:
-                if re.search(pattern, query_lower):
+                if re.search(pattern, query_lower, flags=re.IGNORECASE):
                     return intent
 
-        return self._classify_intent_with_llm(query_lower)
+        return "general"
+
+    def _classify_intent(
+        self, query_lower: str, *, use_llm: bool
+    ) -> tuple[str, str, bool]:
+        """Use the LLM as the primary semantic router with deterministic fallback.
+
+        The heuristic remains deliberately available for offline tests, provider
+        failures, and malformed model output.  It is not silently bypassed:
+        callers can expose the fallback in the route audit trail.
+        """
+        if use_llm:
+            llm_intent = self._classify_intent_with_llm(query_lower)
+            if llm_intent is not None:
+                return llm_intent, "Intent selected by LLM planner", False
+
+        heuristic_intent = self._classify_intent_heuristically(query_lower)
+        reason = (
+            "LLM planner unavailable or invalid; heuristic fallback selected intent"
+            if use_llm
+            else "Heuristic planner explicitly selected"
+        )
+        return heuristic_intent, reason, use_llm
     
     def _extract_sub_tasks(self, query: str, query_type: str, sub_queries: List[str]) -> List[str]:
         if query_type == "direct":

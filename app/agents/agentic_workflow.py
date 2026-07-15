@@ -37,12 +37,18 @@ class GraphNodes:
         embedder: Optional[BaseEmbedder] = None,
         retriever: Optional[HybridRetriever] = None,
         use_llm_planner: bool = True,
+        enable_tools: bool = True,
+        enable_coverage_retry: bool = True,
+        max_retrieval_rounds: int = MAX_RETRIEVAL_ROUNDS,
         **kwargs,
     ):
         self.index_store = index_store
         self.index_path = index_path or settings.indexes_dir
         self.embedder = embedder
         self.retriever = retriever
+        self.enable_tools = enable_tools
+        self.enable_coverage_retry = enable_coverage_retry
+        self.max_retrieval_rounds = max_retrieval_rounds
         if self.index_store is None and self.retriever is not None:
             self.index_store = self.retriever.index_store
         self.planner = PlannerAgent()
@@ -86,13 +92,24 @@ class GraphNodes:
         self.tool_registry.register(RuleLookupTool(index_store=self.index_store))
 
     def is_ready(self) -> bool:
-        return self.index_store is not None and self.retriever is not None
+        if self.index_store is None or self.retriever is None:
+            return False
+        readiness_error = getattr(self.retriever, "readiness_error", None)
+        return readiness_error is None or readiness_error() is None
+
+    def readiness_error(self) -> Optional[str]:
+        if self.index_store is None or self.retriever is None:
+            return "retrieval index is not loaded"
+        probe = getattr(self.retriever, "readiness_error", None)
+        return probe() if probe is not None else None
 
 
 def planner_agent_node(nodes: GraphNodes):
     def node(state: AgentState) -> Dict[str, Any]:
         query = state["query"]
-        planner_output = nodes.planner.plan(query)
+        use_llm = state.get("use_llm_planner", True)
+        planner_output = nodes.planner.plan(query, use_llm=use_llm)
+        fallback_used = "fallback" in (planner_output.reason or "").lower()
 
         tool_name = planner_output.tool_name if planner_output.requires_tool else None
         tool_mode = planner_output.tool_mode if planner_output.requires_tool else "none"
@@ -113,7 +130,7 @@ def planner_agent_node(nodes: GraphNodes):
             ),
             answer_format=planner_output.answer_format,
             route_reason=planner_output.reason,
-            fallback_used=False,
+            fallback_used=fallback_used,
             sub_queries=list(planner_output.sub_queries),
         )
 
@@ -267,13 +284,11 @@ def evidence_selector_node(nodes: GraphNodes):
         chunks_data = state["retrieved_chunks"]
         tool_results = state.get("tool_results", [])
 
-        if not chunks_data and tool_results:
-            return {"selected_evidence": None}
-
         route_decision = RouteDecision(**route_dict) if route_dict else None
         planner_output = route_decision.to_planner_output() if route_decision else None
 
         results = _reconstruct_results(chunks_data, nodes.index_store)
+        results = _merge_tool_evidence(results, tool_results, nodes.index_store)
 
         if planner_output:
             selected = nodes.evidence_selector.select(planner_output, results)
@@ -289,7 +304,6 @@ def reasoning_node(nodes: GraphNodes):
     def node(state: AgentState) -> Dict[str, Any]:
         query = state["query"]
         route_dict = state.get("route_decision")
-        chunks_data = state["retrieved_chunks"]
         tool_results = state.get("tool_results", [])
 
         route_decision = RouteDecision(**route_dict) if route_dict else None
@@ -310,24 +324,6 @@ def reasoning_node(nodes: GraphNodes):
         citations = format_citations(
             [r for r in results if r.chunk_id in reasoning_output.used_chunk_ids]
         )
-
-        if tool_results and not results:
-            for tr in tool_results:
-                if tr.get("success") and tr.get("tool_name") == "rule_lookup":
-                    output = tr.get("output", {})
-                    for chunk_data in output.get("chunks", []):
-                        chunk = nodes.index_store.get_chunk_by_id(chunk_data.get("chunk_id")) if nodes.index_store else None
-                        if chunk:
-                            citations.append(Citation(
-                                chunk_id=chunk_data.get("chunk_id", ""),
-                                document_id=chunk_data.get("source_path", ""),
-                                rule_number=chunk_data.get("rule_number"),
-                                section_title=chunk_data.get("section_title"),
-                                chapter=chunk_data.get("chapter"),
-                                source_path=chunk_data.get("source_path", ""),
-                                snippet=chunk_data.get("text", "")[:300],
-                                score=1.0,
-                            ))
 
         return {
             "answer": reasoning_output.answer,
@@ -395,7 +391,31 @@ def _answer_evidence_results(state: AgentState, index_store: Optional[IndexStore
             selected_evidence.get("selected_chunks", []),
             index_store,
         )
-    return _reconstruct_results(state.get("retrieved_chunks", []), index_store)
+    results = _reconstruct_results(state.get("retrieved_chunks", []), index_store)
+    return _merge_tool_evidence(results, state.get("tool_results", []), index_store)
+
+
+def _merge_tool_evidence(
+    results: list[RetrievalResult], tool_results: list[Dict[str, Any]],
+    index_store: Optional[IndexStore],
+) -> list[RetrievalResult]:
+    """Treat rule-lookup output as normal evidence throughout the pipeline."""
+    if index_store is None:
+        return results
+    merged = {result.chunk_id: result for result in results}
+    for tool_result in tool_results:
+        if not tool_result.get("success") or tool_result.get("tool_name") != "rule_lookup":
+            continue
+        output = tool_result.get("output") or {}
+        for chunk_data in output.get("chunks", []):
+            chunk_id = chunk_data.get("chunk_id")
+            chunk = index_store.get_chunk_by_id(chunk_id) if chunk_id else None
+            if chunk and chunk_id not in merged:
+                merged[chunk_id] = RetrievalResult(
+                    chunk_id=chunk_id, chunk=chunk, score=1.0,
+                    bm25_score=1.0, dense_score=1.0,
+                )
+    return list(merged.values())
 
 
 def _complete_retrieval_round(
@@ -434,11 +454,11 @@ def _execute_single_tool(
                     logger.info(f"Fallback recovery succeeded for {tool_name}")
                     try:
                         output = tool.run(merged)
-                        return {
+                        return _tool_execution_result(**{
                             "call_id": call_id, "tool_name": tool_name,
                             "success": True, "output": output, "error": None,
                             "_recovered": True,
-                        }
+                        })
                     except Exception as e:
                         return {
                             "call_id": call_id, "tool_name": tool_name,
@@ -453,16 +473,39 @@ def _execute_single_tool(
 
     try:
         output = tool.run(inputs)
-        return {
+        return _tool_execution_result(**{
             "call_id": call_id, "tool_name": tool_name,
             "success": True, "output": output, "error": None,
-        }
+        })
     except Exception as e:
         return {
             "call_id": call_id, "tool_name": tool_name,
             "success": False, "output": None,
             "error": f"Tool execution error: {str(e)}",
         }
+
+
+def _tool_execution_result(**result: Any) -> Dict[str, Any]:
+    """Normalize domain failures returned as ``{'error': ...}`` by tools."""
+    output = result.get("output")
+    if isinstance(output, dict) and output.get("error"):
+        result["success"] = False
+        result["error"] = str(output["error"])
+    return result
+
+
+def _tool_chain_context(inputs: Dict[str, Any], query: str) -> Dict[str, Any]:
+    """Preserve query facts that downstream chain steps require."""
+    context = dict(inputs)
+    lowered = query.lower()
+    if "is_connected" not in context:
+        context["is_connected"] = (
+            "connected transaction" in lowered or "connected party" in lowered
+            or "\u5173\u8054\u4ea4\u6613" in query
+        )
+    if "transaction_type" not in context:
+        context["transaction_type"] = "disposal" if "disposal" in lowered else "acquisition"
+    return context
 
 
 def tool_executor_node(nodes: GraphNodes):
@@ -484,8 +527,8 @@ def tool_executor_node(nodes: GraphNodes):
 
         all_tool_calls = []
         all_tool_results = []
-        user_context = dict(tool_inputs)
         query_text = state.get("query", "") or state.get("original_query", "")
+        user_context = _tool_chain_context(tool_inputs, query_text)
 
         call_id = str(uuid.uuid4())[:8]
         tool_call = {"call_id": call_id, "tool_name": tool_name, "inputs": tool_inputs}
@@ -531,7 +574,11 @@ def should_route(state: AgentState) -> str:
         return "retrieve"
 
     route_decision = RouteDecision(**route_dict)
-    if route_decision.tool_decision and route_decision.tool_decision.requires_tool:
+    if (
+        route_decision.tool_decision
+        and route_decision.tool_decision.requires_tool
+        and state.get("enable_tools", True)
+    ):
         return "execute_tool"
     return "retrieve"
 
@@ -590,7 +637,8 @@ def build_graph(nodes: GraphNodes) -> StateGraph:
         lambda state: (
             "retrieve"
             if state.get("needs_second_retrieval")
-            and state.get("iteration_count", 0) < MAX_RETRIEVAL_ROUNDS
+            and nodes.enable_coverage_retry
+            and state.get("iteration_count", 0) < nodes.max_retrieval_rounds
             else "select"
         ),
         {
@@ -614,12 +662,18 @@ class AgenticRAGOrchestrator:
         embedder: Optional[BaseEmbedder] = None,
         retriever: Optional[HybridRetriever] = None,
         use_llm_planner: bool = True,
+        enable_tools: bool = True,
+        enable_coverage_retry: bool = True,
+        max_retrieval_rounds: int = MAX_RETRIEVAL_ROUNDS,
     ):
         self.nodes = GraphNodes(
             index_store=index_store,
             index_path=index_path,
             embedder=embedder,
             retriever=retriever,
+            enable_tools=enable_tools,
+            enable_coverage_retry=enable_coverage_retry,
+            max_retrieval_rounds=max_retrieval_rounds,
         )
         self.graph = build_graph(self.nodes)
         self.use_llm_planner = use_llm_planner
@@ -656,6 +710,7 @@ class AgenticRAGOrchestrator:
             "route_validation": None,
             "decomposition_validation": None,
             "use_llm_planner": use_llm_planner,
+            "enable_tools": self.nodes.enable_tools,
             "route_retry_count": 0,
             "tool_calls": [],
             "tool_results": [],

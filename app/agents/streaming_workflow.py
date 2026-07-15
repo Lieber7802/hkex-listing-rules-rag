@@ -82,6 +82,7 @@ class StreamingOrchestrator:
             "route_validation": None,
             "decomposition_validation": None,
             "use_llm_planner": use_llm_planner,
+            "enable_tools": self.nodes.enable_tools,
             "route_retry_count": 0,
             "tool_calls": [],
             "tool_results": [],
@@ -140,8 +141,10 @@ class StreamingOrchestrator:
         except Exception as e:
             logger.error(f"Streaming error: {e}")
             yield {"event": "error", "data": {"message": str(e)}}
+            return
 
-        # Final done event
+        # A successful stream has exactly one terminal event.  In particular,
+        # clients must not see a misleading ``done`` after ``error``.
         elapsed_ms = int((time.time() - start_time) * 1000)
         yield {
             "event": "done",

@@ -1,6 +1,7 @@
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
+import time
 import numpy as np
 
 from app.schemas.document import Chunk
@@ -42,6 +43,33 @@ class HybridRetriever:
         self.top_k_dense = top_k_dense or settings.retrieval_top_k_dense
         self.top_k_final = top_k_final or settings.retrieval_top_k_final
         self.rrf_k = rrf_k if rrf_k is not None else getattr(settings, "rrf_k", 20)
+        self._readiness_error: Optional[str] = None
+        self._readiness_checked_at = 0.0
+
+    def readiness_error(self, cache_seconds: float = 30.0) -> Optional[str]:
+        """Validate live query embedding and its dimension before accepting traffic."""
+        now = time.monotonic()
+        if now - self._readiness_checked_at < cache_seconds:
+            return self._readiness_error
+        self._readiness_checked_at = now
+        if self.index_store.vector_index is None and self.index_store.bm25_index is None:
+            self._readiness_error = "no retrieval index is loaded"
+            return self._readiness_error
+        if self.index_store.vector_index is None:
+            self._readiness_error = None
+            return None
+        try:
+            embedding = self.embedder.embed_single("HKEX retrieval readiness probe")
+            if len(embedding) != self.index_store.vector_index.dimension:
+                self._readiness_error = (
+                    f"embedding dimension {len(embedding)} does not match index dimension "
+                    f"{self.index_store.vector_index.dimension}"
+                )
+            else:
+                self._readiness_error = None
+        except Exception as exc:
+            self._readiness_error = f"query embedding is unavailable: {exc}"
+        return self._readiness_error
 
     def _normalize_scores(self, scores: List[Tuple[str, float]]) -> Dict[str, float]:
         """Min-max normalize raw scores to [0, 1].

@@ -1,5 +1,6 @@
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from app.schemas.document import Chunk
 from app.schemas.query import PlannerOutput
@@ -57,7 +58,10 @@ class ReasoningAgent:
 
         if client is not None and self.llm_provider in ["openai", "deepseek"]:
             try:
-                answer = self._generate_with_llm(query, context, planner_output, chat_history, history_summary, tool_context)
+                answer = self._generate_with_llm(
+                    client, query, context, planner_output, chat_history,
+                    history_summary, tool_context,
+                )
             except Exception as e:
                 logger.error(f"LLM generation failed: {e}")
                 if has_tool_results:
@@ -187,7 +191,11 @@ class ReasoningAgent:
                 lines.append(f"- [{req}] {item.get('task', '')} (Rule {item.get('rule_reference', '')})")
         return "\n".join(lines)
     
-    def _generate_with_llm(self, query: str, context: str, planner_output: PlannerOutput, chat_history: Optional[List[Dict[str, str]]] = None, history_summary: Optional[str] = None, tool_context: str = "") -> str:
+    def _generate_with_llm(
+        self, client: Any, query: str, context: str, planner_output: PlannerOutput,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        history_summary: Optional[str] = None, tool_context: str = "",
+    ) -> str:
         system_prompt = """You are a compliance assistant for HKEX Listing Rules.
 Answer questions based ONLY on the provided context and tool results.
 Always cite the specific rule numbers when making statements.
@@ -219,7 +227,7 @@ Please provide a clear, citation-grounded answer based on the context and tool r
 
         messages.append({"role": "user", "content": user_prompt})
 
-        response = self._client.chat.completions.create(
+        response = client.chat.completions.create(
             model=self.llm_model,
             messages=messages,
             max_tokens=1000,

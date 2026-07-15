@@ -78,30 +78,26 @@ class SizeTestCalculatorTool(BaseTool):
         transaction_type = inputs["transaction_type"]
 
         # ── Zero-denominator guard ───────────────────────────────
-        zero_fields = []
-        if issuer_market_cap == 0:
-            zero_fields.append("issuer_market_cap")
-        if issuer_total_assets == 0:
-            zero_fields.append("issuer_total_assets")
-        if issuer_net_assets == 0:
-            zero_fields.append("issuer_net_assets")
-        if issuer_annual_profit == 0:
-            zero_fields.append("issuer_annual_profit")
-        if issuer_shares_outstanding == 0 and consideration_shares != 0:
-            zero_fields.append("issuer_shares_outstanding")
-
-        if zero_fields:
-            return {
-                "error": f"Zero value(s) in denominator field(s): {', '.join(zero_fields)}. Cannot compute ratio.",
-                "ratios": {},
-                "warnings": [],
-            }
+        unavailable = []
+        ratios: Dict[str, float] = {}
+        if issuer_market_cap:
+            ratios["consideration_ratio"] = round(transaction_consideration / issuer_market_cap * 100, 1)
+        else:
+            unavailable.append("consideration_ratio (issuer_market_cap missing or zero)")
+        if issuer_total_assets:
+            ratios["assets_ratio"] = round(acquired_assets / issuer_total_assets * 100, 1)
+        else:
+            unavailable.append("assets_ratio (issuer_total_assets missing or zero)")
+        if issuer_net_assets:
+            ratios["net_assets_ratio"] = round(acquired_net_assets / issuer_net_assets * 100, 1)
+        else:
+            unavailable.append("net_assets_ratio (issuer_net_assets missing or zero)")
 
         # ── Negative profit handling ─────────────────────────────
         profit_numerator = acquired_profit
         profit_denominator = issuer_annual_profit
 
-        if profit_numerator < 0 or profit_denominator < 0:
+        if profit_denominator and (profit_numerator < 0 or profit_denominator < 0):
             warnings.append(
                 "Negative profit detected — using absolute values for profits ratio calculation."
             )
@@ -109,23 +105,21 @@ class SizeTestCalculatorTool(BaseTool):
             profit_denominator = abs(profit_denominator)
 
         # ── Compute ratios ───────────────────────────────────────
-        consideration_ratio = round(transaction_consideration / issuer_market_cap * 100, 1)
-        assets_ratio = round(acquired_assets / issuer_total_assets * 100, 1)
-        profits_ratio = round(profit_numerator / profit_denominator * 100, 1)
-        net_assets_ratio = round(acquired_net_assets / issuer_net_assets * 100, 1)
-
-        if consideration_shares == 0:
-            shares_ratio = 0.0
+        if profit_denominator:
+            ratios["profits_ratio"] = round(profit_numerator / profit_denominator * 100, 1)
         else:
-            shares_ratio = round(consideration_shares / issuer_shares_outstanding * 100, 1)
+            unavailable.append("profits_ratio (issuer_annual_profit missing or zero)")
+        if consideration_shares == 0:
+            ratios["shares_ratio"] = 0.0
+        elif issuer_shares_outstanding:
+            ratios["shares_ratio"] = round(consideration_shares / issuer_shares_outstanding * 100, 1)
+        else:
+            unavailable.append("shares_ratio (issuer_shares_outstanding missing or zero)")
 
-        ratios = {
-            "consideration_ratio": consideration_ratio,
-            "assets_ratio": assets_ratio,
-            "profits_ratio": profits_ratio,
-            "shares_ratio": shares_ratio,
-            "net_assets_ratio": net_assets_ratio,
-        }
+        if unavailable:
+            warnings.append("Unavailable ratios: " + "; ".join(unavailable))
+        if not ratios:
+            return {"error": "No size-test ratios can be computed from the supplied inputs.", "ratios": {}, "warnings": warnings}
 
         # ── Highest ratio ────────────────────────────────────────
         highest_name = max(ratios, key=ratios.get)  # type: ignore[arg-type]
@@ -147,6 +141,7 @@ class SizeTestCalculatorTool(BaseTool):
             "highest_ratio_name": highest_name,
             "suggested_classification": classification,
             "warnings": warnings,
+            "partial_result": bool(unavailable),
         }
 
     # ── helpers ───────────────────────────────────────────────────

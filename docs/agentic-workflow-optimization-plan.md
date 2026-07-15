@@ -83,8 +83,9 @@ the machine running them.
 
 - Redirect the default test index path to a temporary empty directory.
 - Replace external embedding lookup with a deterministic test embedder.
-- Update the architecture diagram to describe the heuristic planner, current
-  routing, evidence flow, and targeted retry behavior.
+- Update the architecture diagram to describe the LLM-primary planner with
+  deterministic heuristic fallback, current routing, evidence flow, and
+  targeted retry behavior.
 - Keep `/chat` and `/chat/stream` contracts unchanged.
 
 ## Verification
@@ -101,7 +102,9 @@ requires:
 ## Out of Scope
 
 - restoring the removed V1 or V2 API routes;
-- reintroducing LLM route planning, route validation, or task decomposition;
+- restoring the removed route validator or task-decomposition stages; the
+  approved LLM-primary intent classifier remains bounded by deterministic
+  validation and heuristic fallback;
 - changing retrieval thresholds, RRF parameters, or embedding models;
 - changing the public `ChatResponse` contract beyond populating existing fields
   correctly;
