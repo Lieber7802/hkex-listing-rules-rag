@@ -93,10 +93,10 @@ def evaluate_rows(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
                     if not expected_output:
                         per_call_results.append(bool(actual_result and actual_result.get("success")))
                     else:
-                        output = (actual_result or {}).get("output") or {}
+                        tool_output = (actual_result or {}).get("output") or {}
                         per_call_results.append(bool(actual_result and actual_result.get("success")) and all(
-                            abs(float(output[key]) - float(value)) <= expected.numeric_tolerances.get(key, 0.0)
-                            if isinstance(value, (int, float)) and key in output else output.get(key) == value
+                            abs(float(tool_output[key]) - float(value)) <= expected.numeric_tolerances.get(key, 0.0)
+                            if isinstance(value, (int, float)) and key in tool_output else tool_output.get(key) == value
                             for key, value in expected_output.items()
                         ))
                 tool_input_scores.append(sum(per_call_inputs) / len(per_call_inputs))

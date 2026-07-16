@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from app.evaluation.dataset_loader import read_jsonl, write_jsonl
+from app.evaluation.metrics.summary import evaluate_rows
 from app.evaluation.reporting import export_report
 from app.evaluation.runners import AgenticRAGRunner, SYSTEM_CONFIGS
+from app.evaluation.schemas import CaseType, ExpectedToolCall
 from tests.evaluation_helpers import answerable_case
 
 
@@ -48,6 +50,18 @@ def test_jsonl_writer_falls_back_when_windows_replace_is_denied(tmp_path: Path, 
     write_jsonl(output, [{"case_id": "case-1"}])
     monkeypatch.setattr(Path, "replace", original_replace)
     assert read_jsonl(output) == [{"case_id": "case-1"}]
+
+
+def test_summary_keeps_system_container_when_scoring_tool_results():
+    case = answerable_case().model_copy(update={
+        "case_type": CaseType.TOOL,
+        "expected_tool_calls": [ExpectedToolCall(
+            order=1, tool_name="size_test_calculator", inputs={}, expected_output={"ratio": 1.0},
+        )],
+    })
+    rows = AgenticRAGRunner(SYSTEM_CONFIGS["A1"], FakeOrchestrator).run_case(case, "run-1")
+    summary = evaluate_rows(rows, [case])
+    assert summary["systems"]["A1"]["case_count"] == 1
 
 
 def test_report_export_writes_required_artifacts(tmp_path: Path):
