@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.evaluation.dataset_loader import read_jsonl, write_jsonl
 from app.evaluation.reporting import export_report
 from app.evaluation.runners import AgenticRAGRunner, SYSTEM_CONFIGS
 from tests.evaluation_helpers import answerable_case
@@ -34,6 +35,19 @@ def test_agentic_runner_passes_explicit_index_path_to_orchestrator():
     runner = AgenticRAGRunner(SYSTEM_CONFIGS["A1"], FakeOrchestrator, index_path=index_path)
     orchestrator = runner._orchestrator()
     assert orchestrator.kwargs["index_path"] == index_path
+
+
+def test_jsonl_writer_falls_back_when_windows_replace_is_denied(tmp_path: Path, monkeypatch):
+    output = tmp_path / "checkpoint.jsonl"
+    original_replace = Path.replace
+
+    def denied_replace(self, target):
+        raise PermissionError("simulated Windows file observation")
+
+    monkeypatch.setattr(Path, "replace", denied_replace)
+    write_jsonl(output, [{"case_id": "case-1"}])
+    monkeypatch.setattr(Path, "replace", original_replace)
+    assert read_jsonl(output) == [{"case_id": "case-1"}]
 
 
 def test_report_export_writes_required_artifacts(tmp_path: Path):

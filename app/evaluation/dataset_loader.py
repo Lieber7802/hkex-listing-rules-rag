@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Type
 
@@ -31,7 +32,7 @@ def write_jsonl(path: Path, records: Iterable[Any]) -> None:
             else:
                 payload = record
             handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-    temporary.replace(path)
+    _replace_temporary_file(temporary, path)
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -42,4 +43,14 @@ def write_json(path: Path, value: Any) -> None:
     with temporary.open("w", encoding="utf-8", newline="\n") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
-    temporary.replace(path)
+    _replace_temporary_file(temporary, path)
+
+
+def _replace_temporary_file(temporary: Path, path: Path) -> None:
+    try:
+        temporary.replace(path)
+    except PermissionError:
+        # Windows can reject os.replace while the prior result is briefly observed.
+        # Copying over the already-complete file preserves checkpointed evaluation rows.
+        shutil.copyfile(temporary, path)
+        temporary.unlink(missing_ok=True)
