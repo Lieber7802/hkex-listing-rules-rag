@@ -7,7 +7,18 @@ from app.core.logger import logger
 
 
 class PlannerAgent:
-    def __init__(self):
+    _REGULATORY_GROUNDS_TERMS = (
+        "disclosure", "announce", "announcement", "approval", "obligation",
+        "requirement", "applicable rule", "applicable rules", "consequence",
+        "consequences", "legal basis", "why", "disclose", "circular",
+        "\u62ab\u9732", "\u516c\u544a", "\u6279\u51c6", "\u80a1\u4e1c\u6279\u51c6", "\u4e49\u52a1",
+        "\u89c4\u5219", "\u540e\u679c", "\u9002\u7528", "\u901a\u51fd",
+    )
+
+    def __init__(self, tool_evidence_policy: str = "regulatory_grounded"):
+        if tool_evidence_policy not in {"legacy", "regulatory_grounded"}:
+            raise ValueError(f"unsupported tool evidence policy: {tool_evidence_policy}")
+        self.tool_evidence_policy = tool_evidence_policy
         self.multi_hop_indicators = [
             r'\band\b',
             r'\bor\b',
@@ -54,6 +65,10 @@ class PlannerAgent:
             ],
             'obligation_summary': [
                 r'disclosure (?:obligation|requirement)', r'what (?:are|is) (?:the )?(?:disclosure|reporting)',
+                r'\bsummarize\b.*\b(?:obligation|compliance|disclosure)',
+                r'\b(?:obligation|compliance)\b.*\b(?:summary|summarize|requirement)',
+                "\u6982\u62ec.*(?:\u62ab\u9732|\u5408\u89c4|\u4e49\u52a1|\u8981\u6c42)",
+                "(?:\u62ab\u9732|\u5408\u89c4)\u4e49\u52a1",
                 # Chinese
                 r'披露(?:义务|要求|规定)', r'信息披露', r'应当披露', r'须披露',
             ],
@@ -73,7 +88,7 @@ class PlannerAgent:
                 r'程序', r'流程', r'步骤', r'如何', r'怎么', r'手续',
             ],
             'calculation_required': [
-                r'calculate', r'ratio', r'percentage', r'compute',
+                r'\bcalculate\b', r'\bratios?\b', r'\bpercentages?\b', r'\bcompute\b',
                 # Chinese
                 r'计算', r'比率', r'百分比', r'比例', r'金额',
             ],
@@ -94,6 +109,20 @@ class PlannerAgent:
         intent, planner_reason, fallback_used = self._classify_intent(
             query_lower, use_llm=use_llm
         )
+        guarded_intent = self._apply_intent_guardrails(intent, query_lower)
+        if guarded_intent != intent:
+            planner_reason = (
+                f"{planner_reason}; deterministic query semantics corrected "
+                f"{intent} to {guarded_intent}"
+            )
+            intent = guarded_intent
+        if intent == "calculation_required" and query_type != "direct":
+            # Calculation inputs often contain several "and" clauses. They
+            # are one tool workflow, not independent regulatory sub-questions.
+            query_type = "direct"
+            sub_queries = [query]
+            needs_second_retrieval = False
+            reason = f"{reason}; calculation workflow kept as one tool query"
         if planner_reason:
             reason = f"{reason}; {planner_reason}"
         
@@ -101,14 +130,14 @@ class PlannerAgent:
         
         retrieval_strategy = self._determine_retrieval_strategy(query_type, intent, needs_second_retrieval)
         
-        requires_tool = self._requires_tool(intent, query_lower)
+        tool_name = self._select_tool_name(intent, query_lower)
+        requires_tool = self._requires_tool(intent, query_lower) and tool_name is not None
 
         evidence_requirements = self._build_evidence_requirements(sub_tasks, intent)
 
         answer_format = self._determine_answer_format(intent, query_type)
 
-        tool_name = self._select_tool_name(intent, query_lower)
-        tool_mode = self._select_tool_mode(intent)
+        tool_mode = self._select_tool_mode(intent, query_lower)
 
         output = PlannerOutput(
             query_type=query_type,
@@ -167,7 +196,10 @@ class PlannerAgent:
         return None
 
     def _classify_intent_heuristically(self, query_lower: str) -> str:
-        priority_intents = ['comparison', 'calculation_required']
+        priority_intents = [
+            'comparison', 'calculation_required', 'procedure_flow',
+            'obligation_summary',
+        ]
         for intent in priority_intents:
             if intent in self.intent_patterns:
                 for pattern in self.intent_patterns[intent]:
@@ -182,6 +214,30 @@ class PlannerAgent:
                     return intent
 
         return "general"
+
+    def _apply_intent_guardrails(self, intent: str, query_lower: str) -> str:
+        """Correct only unambiguous lexical conflicts after LLM classification.
+
+        LLM planning remains primary. These guards prevent known category
+        errors such as matching ``ratio`` inside ``registration`` and prevent
+        an explicit procedure/obligation request from being collapsed into a
+        generic rule lookup merely because it cites a rule number.
+        """
+        if self._matches_any(self.intent_patterns['comparison'], query_lower):
+            return 'comparison'
+        if self._matches_any(self.intent_patterns['calculation_required'], query_lower):
+            return 'calculation_required'
+        if self._matches_any(self.intent_patterns['procedure_flow'], query_lower):
+            return 'procedure_flow'
+        if self._matches_any(self.intent_patterns['obligation_summary'], query_lower):
+            return 'obligation_summary'
+        if self._matches_any(self.intent_patterns['rule_lookup'], query_lower):
+            return 'rule_lookup'
+        return intent
+
+    @staticmethod
+    def _matches_any(patterns: List[str], query_lower: str) -> bool:
+        return any(re.search(pattern, query_lower, flags=re.IGNORECASE) for pattern in patterns)
 
     def _classify_intent(
         self, query_lower: str, *, use_llm: bool
@@ -224,8 +280,10 @@ class PlannerAgent:
             return True
         if intent == "eligibility_check":
             return True
-        tool_indicators = ['size test', 'ratio', 'calculate', 'percentage']
-        return any(indicator in query_lower for indicator in tool_indicators)
+        return bool(re.search(
+            r'\b(?:size test|ratios?|calculate|percentages?)\b', query_lower,
+            flags=re.IGNORECASE,
+        ))
 
     def _select_tool_name(self, intent: str, query_lower: str) -> Optional[str]:
         """Map intent to the appropriate tool name."""
@@ -237,8 +295,17 @@ class PlannerAgent:
         }
         return tool_map.get(intent)
 
-    def _select_tool_mode(self, intent: str) -> str:
+    def _select_tool_mode(self, intent: str, query_lower: str = "") -> str:
         """Map intent to tool execution mode."""
+        if self.tool_evidence_policy == "regulatory_grounded":
+            if intent == "calculation_required":
+                return (
+                    "tool_plus_retrieval"
+                    if self._requires_regulatory_grounding(query_lower)
+                    else "tool_only"
+                )
+            if intent == "obligation_summary":
+                return "tool_plus_retrieval"
         mode_map = {
             "calculation_required": "tool_only",
             "rule_lookup": "tool_plus_retrieval",
@@ -246,6 +313,9 @@ class PlannerAgent:
             "obligation_summary": "tool_only",
         }
         return mode_map.get(intent, "none")
+
+    def _requires_regulatory_grounding(self, query_lower: str) -> bool:
+        return any(term in query_lower for term in self._REGULATORY_GROUNDS_TERMS)
     
     def _build_evidence_requirements(self, sub_tasks: List[str], intent: str) -> Dict[str, str]:
         if intent == "rule_lookup":

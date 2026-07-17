@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.evaluation.dataset_loader import read_jsonl
+from app.evaluation.r2_protocol import BenchmarkIsolationReport
 from app.evaluation.schemas import BenchmarkCase, ValidationRecord
 
 
@@ -56,6 +57,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-snapshot", type=Path, required=True)
     parser.add_argument("--source-graph", type=Path, required=True)
     parser.add_argument("--quota", type=Path, required=True)
+    parser.add_argument(
+        "--r2-isolation-report",
+        type=Path,
+        help="Required for an R2 release; must report passed=true against the frozen earlier release.",
+    )
     return parser.parse_args()
 
 
@@ -84,6 +90,14 @@ def main() -> None:
     if not all(record.accepted for record in validations):
         raise ValueError("cannot freeze a release with unaccepted validation records")
 
+    isolation_report = None
+    if args.r2_isolation_report:
+        isolation_report = BenchmarkIsolationReport.model_validate(
+            json.loads(args.r2_isolation_report.read_text(encoding="utf-8"))
+        )
+        if not isolation_report.passed:
+            raise ValueError("cannot freeze an R2 release with a failed isolation report")
+
     input_paths = {
         "benchmark": args.benchmark,
         "judgements": args.judgements,
@@ -93,6 +107,8 @@ def main() -> None:
         "source_graph": args.source_graph,
         "quota": args.quota,
     }
+    if args.r2_isolation_report:
+        input_paths["r2_isolation"] = args.r2_isolation_report
     for path in input_paths.values():
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -101,7 +117,7 @@ def main() -> None:
     try:
         files = {}
         for label, source_path in input_paths.items():
-            destination = args.release_dir / ARTIFACTS[label]
+            destination = args.release_dir / ARTIFACTS.get(label, f"{label}.json")
             shutil.copy2(source_path, destination)
             files[label] = {
                 "path": destination.name,

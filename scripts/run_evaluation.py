@@ -10,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.core.config import settings
 from app.evaluation.execution import run_experiment
+from app.evaluation.runners import SYSTEM_CONFIGS
 
 
 def main() -> None:
@@ -22,7 +23,7 @@ def main() -> None:
     parser.add_argument("--allow-unfrozen", action="store_true", help="Allow pilot/development data without a release manifest")
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument("--max-retries", type=int, default=1)
-    parser.add_argument("--systems", nargs="+", choices=["B3", "A1", "A2", "A3"], default=["B3", "A1", "A2", "A3"])
+    parser.add_argument("--systems", nargs="+", choices=sorted(SYSTEM_CONFIGS), default=["B3", "A1", "A2", "A3"])
     parser.add_argument("--run-id")
     args = parser.parse_args()
     manifest = args.release_manifest or (args.benchmark.parent / "release_manifest.json")

@@ -37,6 +37,15 @@ def _size_test_inputs():
     }
 
 
+def test_chain_context_preserves_connected_transaction_fact():
+    from app.agents.agentic_workflow import _tool_chain_context
+
+    context = _tool_chain_context({}, "This is a connected transaction involving a director")
+    assert context["is_connected"] is True
+    assert context["connected_party_type"] == "director"
+    assert context["transaction_type"] == "acquisition"
+
+
 class TestToolChainDefinitions:
 
     def test_size_test_chains_to_classifier(self):
@@ -99,6 +108,17 @@ class TestResolveChainInputs:
         assert inputs is not None
         assert inputs["is_connected"] is True
 
+    def test_user_context_passes_connected_party_type_to_classifier(self):
+        from app.tools.tool_chain import resolve_chain_inputs
+
+        inputs = resolve_chain_inputs(
+            "size_test_calculator", {"highest_ratio": 30.0}, "transaction_classifier",
+            user_context={"is_connected": True, "connected_party_type": "director"},
+        )
+
+        assert inputs is not None
+        assert inputs["connected_party_type"] == "director"
+
 
 class TestShouldChain:
 
@@ -144,7 +164,7 @@ class TestToolExecutorChain:
 
     def test_full_chain_three_tools(self):
         """size_test → classifier → checklist all execute."""
-        from app.agents.langgraph_workflow_v2 import GraphNodes, tool_executor_node
+        from app.agents.agentic_workflow import GraphNodes, tool_executor_node
 
         store = _make_index_store()
         nodes = GraphNodes(index_store=store, use_llm_planner=False)
@@ -161,7 +181,7 @@ class TestToolExecutorChain:
 
     def test_chain_stops_on_primary_failure(self):
         """If primary tool fails validation, no chain executes."""
-        from app.agents.langgraph_workflow_v2 import GraphNodes, tool_executor_node
+        from app.agents.agentic_workflow import GraphNodes, tool_executor_node
 
         store = _make_index_store()
         nodes = GraphNodes(index_store=store, use_llm_planner=False)
@@ -175,7 +195,7 @@ class TestToolExecutorChain:
 
     def test_single_tool_no_chain(self):
         """rule_lookup has no chain → only 1 tool executes."""
-        from app.agents.langgraph_workflow_v2 import GraphNodes, tool_executor_node
+        from app.agents.agentic_workflow import GraphNodes, tool_executor_node
 
         store = _make_index_store()
         nodes = GraphNodes(index_store=store, use_llm_planner=False)

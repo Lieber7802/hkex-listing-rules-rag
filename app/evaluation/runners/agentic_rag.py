@@ -23,6 +23,9 @@ class AgenticRAGRunner:
             enable_tools=self.config.enable_tools,
             enable_coverage_retry=self.config.enable_coverage_retry,
             max_retrieval_rounds=self.config.max_retrieval_rounds,
+            evidence_selection_policy=self.config.evidence_selection_policy,
+            tool_evidence_policy=self.config.tool_evidence_policy,
+            answer_evidence_contract=self.config.answer_evidence_contract,
         )
 
     def run_case(self, case: BenchmarkCase, run_id: str) -> Sequence[EvaluationRunRow]:
@@ -71,6 +74,7 @@ class AgenticRAGRunner:
             run_id=run_id, case_id=case_id, system=self.config.system_id,
             row_type=row_type, query=query, answer=result.get("answer", ""),
             retrieved_chunks=result.get("retrieved_chunks", []),
+            selected_evidence=result.get("selected_evidence"),
             citations=[c.model_dump() if hasattr(c, "model_dump") else c for c in result.get("citations", [])],
             route_decision=result.get("route_decision"), tool_calls=result.get("tool_calls", []),
             tool_results=result.get("tool_results", []), verification_result=result.get("verification_result"),

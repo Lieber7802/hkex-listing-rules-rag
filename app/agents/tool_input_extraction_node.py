@@ -147,11 +147,26 @@ def _heuristic_extract(query: str, tool_name: str) -> Dict[str, Any]:
 
 
 def extract_tool_inputs(query: str, tool_name: str) -> Dict[str, Any]:
+    heuristic_inputs = _heuristic_extract(query, tool_name)
+    if _has_required_tool_inputs(tool_name, heuristic_inputs):
+        logger.info(f"Heuristic extraction supplied required inputs for {tool_name}")
+        return heuristic_inputs
+
     llm_inputs = _llm_extract(query, tool_name)
     if llm_inputs:
-        return llm_inputs
+        return {**heuristic_inputs, **llm_inputs}
     logger.info(f"LLM extraction returned no results for {tool_name}, using heuristic")
-    return _heuristic_extract(query, tool_name)
+    return heuristic_inputs
+
+
+def _has_required_tool_inputs(tool_name: str, inputs: Dict[str, Any]) -> bool:
+    required_by_tool = {
+        "rule_lookup": {"rule_number"},
+        "size_test_calculator": {"transaction_consideration", "transaction_type"},
+        "transaction_classifier": {"highest_ratio", "transaction_type"},
+        "disclosure_checklist": {"classification"},
+    }
+    return required_by_tool.get(tool_name, set()).issubset(inputs)
 
 
 def tool_input_extraction_node(nodes):
@@ -171,7 +186,7 @@ def tool_input_extraction_node(nodes):
         existing_hints = dict(tool_decision.tool_inputs_hint) if tool_decision.tool_inputs_hint else {}
         query = state["query"]
 
-        if existing_hints and len(existing_hints) >= 1:
+        if existing_hints:
             logger.info(f"Tool input extraction: {tool_name} already has {len(existing_hints)} hint(s), skipping")
             return {}
 

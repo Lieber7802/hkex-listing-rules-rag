@@ -19,9 +19,17 @@ class ReasoningOutput:
 
 
 class ReasoningAgent:
-    def __init__(self, llm_provider: Optional[str] = None, llm_model: Optional[str] = None):
+    def __init__(
+        self,
+        llm_provider: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        answer_evidence_contract: str = "coverage_grounded",
+    ):
+        if answer_evidence_contract not in {"legacy", "coverage_grounded"}:
+            raise ValueError(f"unsupported answer evidence contract: {answer_evidence_contract}")
         self.llm_provider = llm_provider or settings.llm_provider
         self.llm_model = llm_model or settings.llm_model
+        self.answer_evidence_contract = answer_evidence_contract
 
     def _get_client(self):
         return get_llm_client()
@@ -62,18 +70,28 @@ class ReasoningAgent:
                     client, query, context, planner_output, chat_history,
                     history_summary, tool_context,
                 )
+                if not isinstance(answer, str) or not answer.strip():
+                    raise ValueError("LLM generation returned an empty answer")
             except Exception as e:
                 logger.error(f"LLM generation failed: {e}")
                 if has_tool_results:
-                    answer = self._generate_tool_fallback(query, tool_results)
+                    answer = self._generate_fallback_with_tools(
+                        query, planner_output, chunks, tool_results,
+                    )
                 elif chunks:
-                    answer = self._generate_fallback(query, context, chunks)
+                    answer = self._generate_fallback(
+                        query, context, chunks, planner_output,
+                    )
                 else:
                     answer = "No relevant information found."
         elif has_tool_results:
-            answer = self._generate_tool_fallback(query, tool_results)
+            answer = self._generate_fallback_with_tools(
+                query, planner_output, chunks, tool_results,
+            )
         elif chunks:
-            answer = self._generate_fallback(query, context, chunks)
+            answer = self._generate_fallback(
+                query, context, chunks, planner_output,
+            )
         else:
             answer = "No relevant information found."
 
@@ -154,6 +172,39 @@ class ReasoningAgent:
                 parts.append(str(output))
         return "\n\n".join(parts)
 
+    def _generate_fallback_with_tools(
+        self,
+        query: str,
+        planner_output: PlannerOutput,
+        chunks: List[RetrievalResult],
+        tool_results: List[Dict[str, Any]],
+    ) -> str:
+        tool_answer = self._generate_tool_fallback(query, tool_results)
+        if (
+            self.answer_evidence_contract != "coverage_grounded"
+            or planner_output.tool_mode != "tool_plus_retrieval"
+            or not chunks
+        ):
+            return tool_answer
+        regulatory_basis = self._format_regulatory_basis(chunks)
+        return "\n\n".join([
+            "Tool conclusion\n" + tool_answer,
+            "Regulatory basis\n" + regulatory_basis,
+            (
+                "Practical consequence\n"
+                "Apply the tool conclusion only together with the cited rules above. "
+                "The available evidence does not establish any further consequence beyond those rules."
+            ),
+        ])
+
+    def _format_regulatory_basis(self, chunks: List[RetrievalResult]) -> str:
+        lines = []
+        for result in chunks[:3]:
+            chunk = result.chunk
+            label = f"Rule {chunk.rule_number}" if chunk.rule_number else (chunk.section_title or "Selected evidence")
+            lines.append(f"- {label}: {chunk.text[:300]}")
+        return "\n".join(lines)
+
     def _format_size_test_result(self, output: Dict[str, Any]) -> str:
         ratios = output.get("ratios", {})
         lines = ["**Size Test Ratios Calculated:**"]
@@ -202,6 +253,11 @@ Always cite the specific rule numbers when making statements.
 If tool results are provided, incorporate them into your answer with clear formatting.
 If the context does not contain sufficient information, state that clearly.
 Be concise and precise in your answers."""
+        if self.answer_evidence_contract == "coverage_grounded":
+            system_prompt += """
+Address every planned sub-task that has selected evidence; state when evidence is insufficient.
+For tool_plus_retrieval answers, organise the answer as Tool conclusion, Regulatory basis, and Practical consequence.
+Do not present a legal consequence as certain unless the supplied rules support it."""
 
         context_section = ""
         if context:
@@ -213,7 +269,9 @@ Be concise and precise in your answers."""
 
         user_prompt = f"""{context_section}Question: {query}
 
-Query type: {planner_output.query_type}
+        Query type: {planner_output.query_type}
+        Planned sub-tasks: {planner_output.sub_tasks}
+        Tool mode: {planner_output.tool_mode}
 
 Please provide a clear, citation-grounded answer based on the context and tool results above."""
 
@@ -231,7 +289,7 @@ Please provide a clear, citation-grounded answer based on the context and tool r
             model=self.llm_model,
             messages=messages,
             max_tokens=1000,
-            temperature=0.3
+            temperature=0.0
         )
 
         return response.choices[0].message.content
@@ -240,10 +298,24 @@ Please provide a clear, citation-grounded answer based on the context and tool r
         self,
         query: str,
         context: str,
-        results: List[RetrievalResult]
+        results: List[RetrievalResult],
+        planner_output: Optional[PlannerOutput] = None,
     ) -> str:
         if not results:
             return "No relevant information found."
+
+        if (
+            self.answer_evidence_contract == "coverage_grounded"
+            and planner_output is not None
+            and len(planner_output.sub_tasks) > 1
+        ):
+            return "\n".join([
+                "Based on the selected HKEX Rules:",
+                *[
+                    f"- Rule {result.chunk.rule_number or 'N/A'}: {result.chunk.text[:300]}"
+                    for result in results[:len(planner_output.sub_tasks)]
+                ],
+            ])
         
         top_result = results[0]
         chunk = top_result.chunk

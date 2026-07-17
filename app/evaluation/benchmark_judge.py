@@ -54,9 +54,13 @@ class LLMBenchmarkJudge:
         self,
         model: Optional[str] = None,
         client: Optional[Any] = None,
+        max_attempts: int = 3,
     ):
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self.model = model or settings.llm_model
         self._client = client
+        self.max_attempts = max_attempts
 
     def _get_client(self) -> Any:
         client = self._client if self._client is not None else get_llm_client()
@@ -72,29 +76,116 @@ class LLMBenchmarkJudge:
         if self.model == case.provenance.generator_model:
             raise ValueError("judge model must differ from the benchmark generator model")
         prompt, prompt_hash = build_judge_prompt(case, source_registry)
-        response = self._get_client().chat.completions.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Validate benchmark annotations against supplied evidence. Return strict JSON.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=1200,
-            temperature=0.0,
+        errors = []
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                response = self._get_client().chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Validate benchmark annotations against supplied evidence. Return strict JSON only.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=1800,
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as exc:
+                errors.append(f"attempt {attempt}: API call failed: {exc}")
+                continue
+            raw = _json_payload_from_message(response.choices[0].message)
+            if not raw:
+                errors.append(f"attempt {attempt}: no JSON object in model response")
+                continue
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(raw)
+                if not isinstance(payload, dict):
+                    raise ValueError("judge response is not a JSON object")
+                payload = _normalize_response_payload(payload, case)
+                payload.update({
+                    "case_hash": case.content_hash(),
+                    "judge_model": self.model,
+                    "judge_prompt_hash": prompt_hash,
+                    "rubric_version": JUDGE_RUBRIC_VERSION,
+                })
+                return JudgeAssessment.model_validate(payload)
+            except Exception as exc:
+                errors.append(f"attempt {attempt}: {exc}")
+        raise ValueError(
+            f"LLM judge did not produce a valid assessment after {self.max_attempts} attempts: "
+            f"{errors[-1]}"
         )
-        raw = response.choices[0].message.content
-        if not raw:
-            raise ValueError("LLM judge returned an empty response")
-        try:
-            payload: Dict[str, Any] = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"LLM judge returned invalid JSON: {exc}") from exc
-        payload.update({
-            "case_hash": case.content_hash(),
-            "judge_model": self.model,
-            "judge_prompt_hash": prompt_hash,
-            "rubric_version": JUDGE_RUBRIC_VERSION,
+
+
+def _extract_json_payload(raw: str) -> str:
+    content = raw.strip()
+    if "</think>" in content:
+        content = content.split("</think>")[-1].strip()
+    if "```json" in content:
+        content = content.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in content:
+        content = content.split("```", 1)[1].split("```", 1)[0].strip()
+    if not content.startswith("{"):
+        start, end = content.find("{"), content.rfind("}")
+        if start >= 0 and end > start:
+            content = content[start:end + 1]
+    return content
+
+
+def _json_payload_from_message(message: Any) -> Optional[str]:
+    for raw in (getattr(message, "content", None), getattr(message, "reasoning_content", None)):
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        candidate = _extract_json_payload(raw)
+        if candidate.startswith("{"):
+            return candidate
+    return None
+
+
+def _normalize_response_payload(
+    payload: Dict[str, Any],
+    case: BenchmarkCase,
+) -> Dict[str, Any]:
+    normalized = dict(payload)
+    for key in ("language_correct", "no_unsupported_claims"):
+        normalized[key] = _as_boolean(normalized.get(key))
+
+    points = {
+        point.point_id: point
+        for point in [*case.answer_points, *(point for turn in case.turns for point in turn.answer_points)]
+    }
+    results = []
+    for raw_result in normalized.get("answer_point_results", []):
+        result = dict(raw_result)
+        if "supported" not in result:
+            support_value = next((
+                result[key]
+                for key in ("evaluation", "support", "score", "rating", "grounded")
+                if key in result
+            ), False)
+            result["supported"] = _as_boolean(support_value)
+        else:
+            result["supported"] = _as_boolean(result["supported"])
+        point = points.get(result.get("point_id"))
+        if result["supported"] and point and point.supporting_chunk_ids and not result.get("supporting_chunk_ids"):
+            result["supporting_chunk_ids"] = list(point.supporting_chunk_ids)
+        results.append({
+            "point_id": result.get("point_id"),
+            "supported": result["supported"],
+            "supporting_chunk_ids": result.get("supporting_chunk_ids", []),
+            "reason": result.get("reason") or result.get("notes") or "No judge rationale was supplied.",
         })
-        return JudgeAssessment.model_validate(payload)
+    normalized["answer_point_results"] = results
+    return normalized
+
+
+def _as_boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value >= 4
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "pass", "supported", "5", "4"}
+    return False

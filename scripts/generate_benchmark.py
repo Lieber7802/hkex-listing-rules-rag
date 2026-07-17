@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-multiplier", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--case-id-prefix", default="terra")
+    parser.add_argument(
+        "--reference-benchmark",
+        type=Path,
+        help="Exclude multi-source combinations already used by a frozen earlier release.",
+    )
     return parser.parse_args()
 
 
@@ -53,6 +59,8 @@ def main() -> None:
         manifest_path=args.manifest_output,
         target_multiplier=args.target_multiplier,
         seed=args.seed,
+        case_id_prefix=args.case_id_prefix,
+        reference_benchmark_path=args.reference_benchmark,
     )
     print(manifest.model_dump_json(indent=2))
 

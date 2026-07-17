@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from typing import Iterable, Mapping, Sequence
 
 from app.evaluation.run_validation import case_level_rows, validate_metric_readiness
-from app.evaluation.schemas import BenchmarkCase, EvaluationRunRow
+from app.evaluation.schemas import (
+    BenchmarkCase,
+    EvaluationRunRow,
+    GroundedAnswerAssessment,
+    MetricReadiness,
+)
 from app.evaluation.statistics import paired_bootstrap_difference, mcnemar_exact
 
 
@@ -20,12 +26,27 @@ def _contains_point(answer: str, point: str) -> bool:
     return bool(tokens) and sum(token in answer.lower() for token in tokens) / len(tokens) >= 0.5
 
 
-def evaluate_rows(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCase]) -> dict:
+def evaluate_rows(
+    rows: Iterable[EvaluationRunRow],
+    cases: Iterable[BenchmarkCase],
+    grounded_assessments: Iterable[GroundedAnswerAssessment] | None = None,
+) -> dict:
+    rows = list(rows)
+    grounded_assessments = list(grounded_assessments or [])
     case_map = {case.case_id: case for case in cases}
     grouped = defaultdict(list)
-    for row in case_level_rows(rows):
+    case_rows = case_level_rows(rows)
+    assessment_map = {
+        (assessment.system, assessment.case_id): assessment
+        for assessment in grounded_assessments
+    }
+    grounded_readiness = _grounded_answer_readiness(case_rows, assessment_map)
+    for row in case_rows:
         grouped[row.system].append(row)
-    output = {"systems": {}, "readiness": {}}
+    output = {
+        "systems": {},
+        "readiness": {"grounded_answer_completeness": grounded_readiness.model_dump()},
+    }
     for system, system_rows in grouped.items():
         hits5 = hits10 = citations = answer_scores = route_scores = intent_scores = tool_scores = 0
         recall_scores = []
@@ -41,6 +62,7 @@ def evaluate_rows(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
         negative_scores = []
         multi_turn_scores = []
         latencies = []
+        grounded_scores = []
         for row in system_rows:
             case = case_map[row.case_id]
             intent, route, points, expected_tools = _expected_for_case(case)
@@ -62,6 +84,9 @@ def evaluate_rows(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
             if expected_rules:
                 rule_coverages.append(len(expected_rules & retrieved_rules) / len(expected_rules))
             answer_scores += (sum(_contains_point(row.answer, point.text) for point in points) / len(points)) if points else 1.0
+            assessment = assessment_map.get((system, row.case_id))
+            if assessment is not None:
+                grounded_scores.append(assessment.grounded_answer_completeness)
             if case.case_type.value == "negative":
                 expectation = case.negative_expectation
                 required = expectation.expected_message_points if expectation else []
@@ -93,10 +118,10 @@ def evaluate_rows(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
                     if not expected_output:
                         per_call_results.append(bool(actual_result and actual_result.get("success")))
                     else:
-                        output = (actual_result or {}).get("output") or {}
+                        actual_output = (actual_result or {}).get("output") or {}
                         per_call_results.append(bool(actual_result and actual_result.get("success")) and all(
-                            abs(float(output[key]) - float(value)) <= expected.numeric_tolerances.get(key, 0.0)
-                            if isinstance(value, (int, float)) and key in output else output.get(key) == value
+                            abs(float(actual_output[key]) - float(value)) <= expected.numeric_tolerances.get(key, 0.0)
+                            if isinstance(value, (int, float)) and key in actual_output else actual_output.get(key) == value
                             for key, value in expected_output.items()
                         ))
                 tool_input_scores.append(sum(per_call_inputs) / len(per_call_inputs))
@@ -121,6 +146,11 @@ def evaluate_rows(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
             "citation_hit_rate": citations / count if count else None,
             "citation_precision": sum(citation_precisions) / len(citation_precisions) if citation_precisions else None,
             "answer_point_coverage": answer_scores / count if count else None,
+            "grounded_answer_completeness": (
+                sum(grounded_scores) / len(grounded_scores)
+                if len(grounded_scores) == count and count
+                else None
+            ),
             "faithfulness": None, "response_relevancy": None, "factual_correctness": None,
             "intent_accuracy": intent_scores / count if system != "B3" and count else None,
             "route_accuracy": route_scores / count if system != "B3" and count else None,
@@ -138,7 +168,7 @@ def evaluate_rows(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
             "p95_latency_seconds": _quantile(latencies, 0.95) if latencies else None,
         }
     readiness = validate_metric_readiness(rows, cases)
-    output["readiness"] = {key: value.model_dump() for key, value in readiness.items()}
+    output["readiness"].update({key: value.model_dump() for key, value in readiness.items()})
     gate_map = {
         "coverage_improvement_rate": "coverage_improvement",
         "tool_input_accuracy": "tool_input_accuracy",
@@ -150,12 +180,37 @@ def evaluate_rows(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
             if not readiness[readiness_key].ready:
                 metrics[metric] = None
                 output["not_reported_metrics"].append(metric)
+        if not grounded_readiness.ready:
+            metrics["grounded_answer_completeness"] = None
+            output["not_reported_metrics"].append("grounded_answer_completeness")
     output["not_reported_metrics"] = sorted(set(output["not_reported_metrics"] + [
         "faithfulness", "response_relevancy", "factual_correctness",
         "noise_sensitivity", "unsupported_claim_detection", "unsupported_claim_reduction",
     ]))
-    output["paired_comparisons"] = _paired_comparisons(grouped)
+    output["paired_comparisons"] = _paired_comparisons(grouped, assessment_map)
     return output
+
+
+def _grounded_answer_readiness(
+    rows: Sequence[EvaluationRunRow],
+    assessment_map: Mapping[tuple[str, str], GroundedAnswerAssessment],
+) -> MetricReadiness:
+    reasons = []
+    for row in rows:
+        assessment = assessment_map.get((row.system, row.case_id))
+        if assessment is None:
+            reasons.append(f"missing grounded assessment: {row.system}/{row.case_id}")
+            continue
+        answer_hash = hashlib.sha256(row.answer.encode("utf-8")).hexdigest()
+        if assessment.answer_hash != answer_hash:
+            reasons.append(f"stale grounded assessment for changed answer: {row.system}/{row.case_id}")
+    if not rows:
+        reasons.append("no case-level rows are available")
+    return MetricReadiness(
+        metric_name="grounded_answer_completeness",
+        ready=not reasons,
+        reasons=reasons,
+    )
 
 
 def _quantile(values, probability):
@@ -165,9 +220,12 @@ def _quantile(values, probability):
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (index - lower)
 
 
-def _paired_comparisons(grouped):
+def _paired_comparisons(grouped, assessment_map):
     comparisons = {}
-    for baseline, candidate in (("B3", "A1"), ("A1", "A2"), ("A1", "A3")):
+    for baseline, candidate in (
+        ("B3", "A1"), ("A1", "A2"), ("A1", "A3"),
+        ("B3", "A1-new"), ("A1-legacy", "A1-new"),
+    ):
         baseline_rows = {row.case_id: row for row in grouped.get(baseline, [])}
         candidate_rows = {row.case_id: row for row in grouped.get(candidate, [])}
         if not baseline_rows or set(baseline_rows) != set(candidate_rows):
@@ -180,4 +238,18 @@ def _paired_comparisons(grouped):
             "paired_bootstrap": paired_bootstrap_difference(baseline_scores, candidate_scores).model_dump(),
             "mcnemar": mcnemar_exact(baseline_success, candidate_success).model_dump(),
         }
+        baseline_grounded = {
+            case_id: assessment_map[(baseline, case_id)].grounded_answer_completeness
+            for case_id in baseline_rows
+            if (baseline, case_id) in assessment_map
+        }
+        candidate_grounded = {
+            case_id: assessment_map[(candidate, case_id)].grounded_answer_completeness
+            for case_id in candidate_rows
+            if (candidate, case_id) in assessment_map
+        }
+        if set(baseline_grounded) == set(baseline_rows) and set(candidate_grounded) == set(candidate_rows):
+            comparisons[f"{candidate}_vs_{baseline}"]["grounded_answer_completeness"] = (
+                paired_bootstrap_difference(baseline_grounded, candidate_grounded).model_dump()
+            )
     return comparisons

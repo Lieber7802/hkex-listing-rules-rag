@@ -598,6 +598,7 @@ class EvaluationRunRow(StrictModel):
     turn_index: Optional[int] = Field(default=None, ge=1)
     conversation_id: Optional[str] = None
     retrieved_chunks: List[Dict[str, Any]] = Field(default_factory=list)
+    selected_evidence: Optional[Dict[str, Any]] = None
     citations: List[Dict[str, Any]] = Field(default_factory=list)
     route_decision: Optional[Dict[str, Any]] = None
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
@@ -622,6 +623,37 @@ class EvaluationRunRow(StrictModel):
         if self.perturbation_id and not self.parent_case_id:
             raise ValueError("perturbed rows require parent_case_id")
         return self
+
+
+class GroundedAnswerPointAssessment(StrictModel):
+    point_id: str
+    answered: bool
+    correct: bool
+    grounded: bool
+    supporting_chunk_ids: List[str] = Field(default_factory=list)
+    supporting_tool_call_orders: List[int] = Field(default_factory=list)
+    reason: str
+
+    @property
+    def passed(self) -> bool:
+        return self.answered and self.correct and self.grounded
+
+
+class GroundedAnswerAssessment(StrictModel):
+    run_id: str
+    case_id: str
+    system: str
+    answer_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    judge_backend: str
+    rubric_version: str = "r2-grounded-answer-v1"
+    point_assessments: List[GroundedAnswerPointAssessment] = Field(default_factory=list)
+    unsupported_claims: List[str] = Field(default_factory=list)
+
+    @property
+    def grounded_answer_completeness(self) -> float:
+        if not self.point_assessments:
+            return 1.0
+        return sum(point.passed for point in self.point_assessments) / len(self.point_assessments)
 
 
 class MetricReadiness(StrictModel):

@@ -10,18 +10,24 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.evaluation.dataset_loader import read_jsonl
 from app.evaluation.reporting import export_report
-from app.evaluation.schemas import BenchmarkCase, EvaluationRunRow
+from app.evaluation.schemas import BenchmarkCase, EvaluationRunRow, GroundedAnswerAssessment
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--results", type=Path, nargs="+", required=True)
+    parser.add_argument("--grounded-assessments", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("data/evaluation/reports"))
     args = parser.parse_args()
     cases = read_jsonl(args.benchmark, BenchmarkCase)
     rows = [row for path in args.results for row in read_jsonl(path, EvaluationRunRow)]
-    export_report(rows, cases, args.output_dir)
+    assessments = (
+        read_jsonl(args.grounded_assessments, GroundedAnswerAssessment)
+        if args.grounded_assessments
+        else None
+    )
+    export_report(rows, cases, args.output_dir, grounded_assessments=assessments)
     print(f"Wrote report to {args.output_dir}")
 
 

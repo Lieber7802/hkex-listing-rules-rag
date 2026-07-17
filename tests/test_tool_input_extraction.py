@@ -7,6 +7,7 @@ from app.agents.tool_input_extraction_node import (
     _parse_llm_response,
     _get_tool_schemas_text,
 )
+from app.tools.size_test_input_extractor import SizeTestInputExtractor
 
 
 class TestParseLLMResponse:
@@ -94,3 +95,22 @@ class TestExtractToolInputs:
     def test_heuristic_fallback_for_rule_lookup(self):
         inputs = extract_tool_inputs("What does Rule 14.52 require?", "rule_lookup")
         assert inputs.get("rule_number") == "14.52"
+
+
+def test_size_test_extractor_prefers_the_number_after_each_field_label():
+    result = SizeTestInputExtractor().extract(
+        "market cap: 1000; total assets: 2000; net assets: 800; annual profit: 120; "
+        "shares outstanding: 1000; consideration: 180; acquired assets: 360; "
+        "acquired profit: 21.6; acquired net assets: 144; transaction type: disposal"
+    )
+
+    assert result["issuer_market_cap"] == 1000
+    assert result["issuer_total_assets"] == 2000
+    assert result["issuer_net_assets"] == 800
+    assert result["issuer_annual_profit"] == 120
+    assert result["issuer_shares_outstanding"] == 1000
+    assert result["transaction_consideration"] == 180
+    assert result["acquired_assets"] == 360
+    assert result["acquired_profit"] == 21.6
+    assert result["acquired_net_assets"] == 144
+    assert result["transaction_type"] == "disposal"

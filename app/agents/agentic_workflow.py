@@ -40,6 +40,9 @@ class GraphNodes:
         enable_tools: bool = True,
         enable_coverage_retry: bool = True,
         max_retrieval_rounds: int = MAX_RETRIEVAL_ROUNDS,
+        evidence_selection_policy: str = "coverage_aware",
+        tool_evidence_policy: str = "regulatory_grounded",
+        answer_evidence_contract: str = "coverage_grounded",
         **kwargs,
     ):
         self.index_store = index_store
@@ -49,13 +52,20 @@ class GraphNodes:
         self.enable_tools = enable_tools
         self.enable_coverage_retry = enable_coverage_retry
         self.max_retrieval_rounds = max_retrieval_rounds
+        self.evidence_selection_policy = evidence_selection_policy
+        self.tool_evidence_policy = tool_evidence_policy
+        self.answer_evidence_contract = answer_evidence_contract
         if self.index_store is None and self.retriever is not None:
             self.index_store = self.retriever.index_store
-        self.planner = PlannerAgent()
-        self.reasoning_agent = ReasoningAgent()
+        self.planner = PlannerAgent(tool_evidence_policy=tool_evidence_policy)
+        self.reasoning_agent = ReasoningAgent(
+            answer_evidence_contract=answer_evidence_contract,
+        )
         self.citation_formatter = CitationFormatter()
         self.coverage_checker = CoverageChecker()
-        self.evidence_selector = EvidenceSelector()
+        self.evidence_selector = EvidenceSelector(
+            selection_policy=evidence_selection_policy,
+        )
         self.answer_verifier = AnswerVerifier()
         self.tool_registry = ToolRegistry()
 
@@ -503,6 +513,11 @@ def _tool_chain_context(inputs: Dict[str, Any], query: str) -> Dict[str, Any]:
             "connected transaction" in lowered or "connected party" in lowered
             or "\u5173\u8054\u4ea4\u6613" in query
         )
+    if context["is_connected"] and "connected_party_type" not in context:
+        if "director" in lowered or "\u8463\u4e8b" in query:
+            context["connected_party_type"] = "director"
+        elif "substantial shareholder" in lowered or "\u5927\u80a1\u4e1c" in query:
+            context["connected_party_type"] = "substantial_shareholder"
     if "transaction_type" not in context:
         context["transaction_type"] = "disposal" if "disposal" in lowered else "acquisition"
     return context
@@ -523,6 +538,9 @@ def tool_executor_node(nodes: GraphNodes):
             return {"tool_calls": [], "tool_results": []}
 
         tool_name = tool_decision.tool_name or ""
+        if not tool_name:
+            logger.warning("Tool execution skipped because the route has no tool name")
+            return {"tool_calls": [], "tool_results": []}
         tool_inputs = dict(tool_decision.tool_inputs_hint) if tool_decision.tool_inputs_hint else {}
 
         all_tool_calls = []
@@ -665,6 +683,9 @@ class AgenticRAGOrchestrator:
         enable_tools: bool = True,
         enable_coverage_retry: bool = True,
         max_retrieval_rounds: int = MAX_RETRIEVAL_ROUNDS,
+        evidence_selection_policy: str = "coverage_aware",
+        tool_evidence_policy: str = "regulatory_grounded",
+        answer_evidence_contract: str = "coverage_grounded",
     ):
         self.nodes = GraphNodes(
             index_store=index_store,
@@ -674,6 +695,9 @@ class AgenticRAGOrchestrator:
             enable_tools=enable_tools,
             enable_coverage_retry=enable_coverage_retry,
             max_retrieval_rounds=max_retrieval_rounds,
+            evidence_selection_policy=evidence_selection_policy,
+            tool_evidence_policy=tool_evidence_policy,
+            answer_evidence_contract=answer_evidence_contract,
         )
         self.graph = build_graph(self.nodes)
         self.use_llm_planner = use_llm_planner

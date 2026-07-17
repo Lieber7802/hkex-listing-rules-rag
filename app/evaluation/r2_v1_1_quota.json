@@ -1,0 +1,52 @@
+{
+  "cells": [
+    {"primary_category": "rule_lookup", "language": "en", "difficulty": "easy", "count": 8},
+    {"primary_category": "rule_lookup", "language": "en", "difficulty": "medium", "count": 6},
+    {"primary_category": "rule_lookup", "language": "en", "difficulty": "hard", "count": 1},
+    {"primary_category": "rule_lookup", "language": "zh", "difficulty": "easy", "count": 8},
+    {"primary_category": "rule_lookup", "language": "zh", "difficulty": "medium", "count": 6},
+    {"primary_category": "rule_lookup", "language": "zh", "difficulty": "hard", "count": 1},
+
+    {"primary_category": "obligation_summary", "language": "en", "difficulty": "easy", "count": 2},
+    {"primary_category": "obligation_summary", "language": "en", "difficulty": "medium", "count": 2},
+    {"primary_category": "obligation_summary", "language": "en", "difficulty": "hard", "count": 1},
+    {"primary_category": "obligation_summary", "language": "zh", "difficulty": "easy", "count": 2},
+    {"primary_category": "obligation_summary", "language": "zh", "difficulty": "medium", "count": 2},
+    {"primary_category": "obligation_summary", "language": "zh", "difficulty": "hard", "count": 1},
+
+    {"primary_category": "procedure_flow", "language": "en", "difficulty": "easy", "count": 3},
+    {"primary_category": "procedure_flow", "language": "en", "difficulty": "medium", "count": 4},
+    {"primary_category": "procedure_flow", "language": "en", "difficulty": "hard", "count": 1},
+    {"primary_category": "procedure_flow", "language": "zh", "difficulty": "easy", "count": 3},
+    {"primary_category": "procedure_flow", "language": "zh", "difficulty": "medium", "count": 3},
+    {"primary_category": "procedure_flow", "language": "zh", "difficulty": "hard", "count": 1},
+
+    {"primary_category": "comparison_multi_hop", "language": "en", "difficulty": "easy", "count": 2},
+    {"primary_category": "comparison_multi_hop", "language": "en", "difficulty": "medium", "count": 4},
+    {"primary_category": "comparison_multi_hop", "language": "en", "difficulty": "hard", "count": 1},
+    {"primary_category": "comparison_multi_hop", "language": "zh", "difficulty": "easy", "count": 1},
+    {"primary_category": "comparison_multi_hop", "language": "zh", "difficulty": "medium", "count": 2},
+
+    {"primary_category": "size_test_calculation", "language": "en", "difficulty": "easy", "count": 2},
+    {"primary_category": "size_test_calculation", "language": "en", "difficulty": "medium", "count": 2},
+    {"primary_category": "size_test_calculation", "language": "en", "difficulty": "hard", "count": 1},
+    {"primary_category": "size_test_calculation", "language": "zh", "difficulty": "easy", "count": 2},
+    {"primary_category": "size_test_calculation", "language": "zh", "difficulty": "medium", "count": 2},
+    {"primary_category": "size_test_calculation", "language": "zh", "difficulty": "hard", "count": 1},
+
+    {"primary_category": "tool_chain", "language": "en", "difficulty": "medium", "count": 8},
+    {"primary_category": "tool_chain", "language": "en", "difficulty": "hard", "count": 5},
+    {"primary_category": "tool_chain", "language": "zh", "difficulty": "medium", "count": 7},
+    {"primary_category": "tool_chain", "language": "zh", "difficulty": "hard", "count": 5},
+
+    {"primary_category": "multi_turn_follow_up", "language": "en", "difficulty": "medium", "count": 4},
+    {"primary_category": "multi_turn_follow_up", "language": "en", "difficulty": "hard", "count": 3},
+    {"primary_category": "multi_turn_follow_up", "language": "zh", "difficulty": "medium", "count": 4},
+    {"primary_category": "multi_turn_follow_up", "language": "zh", "difficulty": "hard", "count": 4},
+
+    {"primary_category": "negative_insufficient", "language": "en", "difficulty": "medium", "count": 3},
+    {"primary_category": "negative_insufficient", "language": "en", "difficulty": "hard", "count": 2},
+    {"primary_category": "negative_insufficient", "language": "zh", "difficulty": "medium", "count": 5},
+    {"primary_category": "negative_insufficient", "language": "zh", "difficulty": "hard", "count": 5}
+  ]
+}

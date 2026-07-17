@@ -117,6 +117,12 @@ class QueryParser:
         if not text:
             return None
         text_lower = text.lower()
+        explicit = re.search(
+            r"(?:transaction\s*type|type)\s*[:=-]?\s*(acquisition|disposal)",
+            text_lower,
+        )
+        if explicit:
+            return explicit.group(1)
         patterns_acq = [r'acquis(ition|e|ing)?', r'acquir(ing|e)', r'buy(ing)?', r'purchas(e|ing)', r'takeover', r'consolidat(e|ion)']
         for pattern in patterns_acq:
             if re.search(pattern, text_lower):

@@ -7,7 +7,7 @@ from typing import Iterable
 
 from app.evaluation.dataset_loader import write_json
 from app.evaluation.metrics import evaluate_rows
-from app.evaluation.schemas import BenchmarkCase, EvaluationRunRow
+from app.evaluation.schemas import BenchmarkCase, EvaluationRunRow, GroundedAnswerAssessment
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
@@ -19,14 +19,23 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def export_report(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCase], output_dir: Path) -> dict:
+def export_report(
+    rows: Iterable[EvaluationRunRow],
+    cases: Iterable[BenchmarkCase],
+    output_dir: Path,
+    grounded_assessments: Iterable[GroundedAnswerAssessment] | None = None,
+) -> dict:
     rows, cases, output_dir = list(rows), list(cases), Path(output_dir)
-    summary = evaluate_rows(rows, cases)
+    grounded_assessments = list(grounded_assessments or [])
+    summary = evaluate_rows(rows, cases, grounded_assessments=grounded_assessments)
     summary_rows = [{"system": system, **metrics} for system, metrics in summary["systems"].items()]
     _write_csv(output_dir / "summary.csv", summary_rows)
     _write_csv(output_dir / "paired_comparisons.csv", [
         {"comparison": name, **values["paired_bootstrap"], **{
             f"mcnemar_{key}": value for key, value in values["mcnemar"].items()
+        }, **{
+            f"grounded_answer_completeness_{key}": value
+            for key, value in values.get("grounded_answer_completeness", {}).items()
         }} for name, values in summary.get("paired_comparisons", {}).items()
     ])
 
@@ -62,13 +71,24 @@ def export_report(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
     for label, subset in (("common_capability_summary.csv", common_cases), ("agentic_capability_summary.csv", agentic_cases)):
         subset_ids = {case.case_id for case in subset}
         subset_rows = [row for row in rows if row.case_id in subset_ids]
-        subset_summary = evaluate_rows(subset_rows, subset)
+        subset_assessments = [
+            assessment for assessment in grounded_assessments
+            if assessment.case_id in subset_ids
+        ]
+        subset_summary = evaluate_rows(
+            subset_rows, subset, grounded_assessments=subset_assessments,
+        )
         _write_csv(output_dir / label, [
             {"system": system, **metrics} for system, metrics in subset_summary["systems"].items()
         ])
     lines = ["# Evaluation Report", "", "## Overall"]
     for item in summary_rows:
-        lines.append(f"- {item['system']}: cases={item['case_count']}, answer-point coverage={item['answer_point_coverage']}, failure rate={item['failure_rate']}")
+        lines.append(
+            f"- {item['system']}: cases={item['case_count']}, "
+            f"grounded answer completeness={item['grounded_answer_completeness']}, "
+            f"answer-point coverage={item['answer_point_coverage']}, "
+            f"failure rate={item['failure_rate']}"
+        )
     lines.extend(["", "## Metric Readiness"])
     for name, value in summary["readiness"].items():
         lines.append(f"- {name}: {'ready' if value['ready'] else 'not ready'}")
@@ -81,6 +101,12 @@ def export_report(rows: Iterable[EvaluationRunRow], cases: Iterable[BenchmarkCas
             f"95% CI=[{bootstrap['ci_low']:.4f}, {bootstrap['ci_high']:.4f}], "
             f"McNemar p={mcnemar['exact_two_sided_p_value']:.4f}"
         )
+        grounded = values.get("grounded_answer_completeness")
+        if grounded:
+            lines.append(
+                f"  - grounded answer completeness: mean difference={grounded['mean_difference']:.4f}, "
+                f"95% CI=[{grounded['ci_low']:.4f}, {grounded['ci_high']:.4f}]"
+            )
     lines.extend(["", "## Not Reported"])
     lines.extend(f"- {metric}: N/A until its evidence/readiness contract is satisfied" for metric in summary["not_reported_metrics"])
     (output_dir / "evaluation_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")

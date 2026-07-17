@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reuse valid assessments already present in --output.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Bounded number of concurrent independent judge requests.",
+    )
     return parser.parse_args()
 
 
@@ -38,7 +45,8 @@ def main() -> None:
     args = parse_args()
     cases = read_jsonl(args.candidates, BenchmarkCase)
     registry = SourceRegistry.load(args.source_registry)
-    judge = LLMBenchmarkJudge(model=args.model)
+    if args.workers < 1:
+        raise ValueError("workers must be at least 1")
     records_by_case_id = {}
     if args.resume and args.output.exists():
         for record in read_jsonl(args.output):
@@ -48,23 +56,53 @@ def main() -> None:
                 records_by_case_id[case_id] = record
     checkpoint_every = max(1, args.checkpoint_every)
     completed_since_checkpoint = 0
+    failed_case_ids = []
+    pending_cases = []
     for case in sorted(cases, key=lambda item: item.case_id):
         existing = records_by_case_id.get(case.case_id)
-        if existing and existing["assessment"].get("case_hash") == case.content_hash():
+        if (
+            existing
+            and isinstance(existing.get("assessment"), dict)
+            and existing["assessment"].get("case_hash") == case.content_hash()
+        ):
             continue
-        assessment = judge.assess(case, registry)
+        pending_cases.append(case)
+
+    def checkpoint() -> None:
+        write_jsonl(args.output, [records_by_case_id[key] for key in sorted(records_by_case_id)])
+        print(f"Checkpointed {len(records_by_case_id)}/{len(cases)} judge assessments")
+
+    def record_assessment(case: BenchmarkCase, assessment) -> None:
+        nonlocal completed_since_checkpoint
         records_by_case_id[case.case_id] = {
             "case_id": case.case_id,
             "assessment": assessment.model_dump(mode="json"),
         }
         completed_since_checkpoint += 1
         if completed_since_checkpoint >= checkpoint_every:
-            write_jsonl(args.output, [records_by_case_id[key] for key in sorted(records_by_case_id)])
+            checkpoint()
             completed_since_checkpoint = 0
-            print(f"Checkpointed {len(records_by_case_id)}/{len(cases)} judge assessments")
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {
+            executor.submit(LLMBenchmarkJudge(model=args.model).assess, case, registry): case
+            for case in pending_cases
+        }
+        for future in as_completed(futures):
+            case = futures[future]
+            try:
+                assessment = future.result()
+            except Exception as exc:
+                failed_case_ids.append(case.case_id)
+                print(f"Judge failed for {case.case_id}: {exc}")
+                continue
+            record_assessment(case, assessment)
     records = [records_by_case_id[key] for key in sorted(records_by_case_id)]
     write_jsonl(args.output, records)
-    print(f"Wrote {len(records)} judge assessments to {args.output}")
+    print(
+        f"Wrote {len(records)} judge assessments to {args.output}; "
+        f"{len(failed_case_ids)} cases failed after retries"
+    )
 
 
 if __name__ == "__main__":

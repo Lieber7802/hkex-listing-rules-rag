@@ -61,7 +61,7 @@ def build_manifest(
         model_id=settings.llm_model, provider=settings.llm_provider, prompt_hash=prompt_hash,
         generation_parameters={
             "system_id": config_id, "seed": 42, "planner_temperature": 0.0,
-            "answer_temperature": 0.3,
+            "answer_temperature": 0.0,
             "max_tokens": 1000, "retrieval_top_k_bm25": settings.retrieval_top_k_bm25,
             "retrieval_top_k_dense": settings.retrieval_top_k_dense,
             "retrieval_top_k_final": settings.retrieval_top_k_final, "rrf_k": settings.rrf_k,
@@ -69,6 +69,9 @@ def build_manifest(
             "enable_tools": SYSTEM_CONFIGS[config_id].enable_tools,
             "enable_coverage_retry": SYSTEM_CONFIGS[config_id].enable_coverage_retry,
             "max_retrieval_rounds": SYSTEM_CONFIGS[config_id].max_retrieval_rounds,
+            "evidence_selection_policy": SYSTEM_CONFIGS[config_id].evidence_selection_policy,
+            "tool_evidence_policy": SYSTEM_CONFIGS[config_id].tool_evidence_policy,
+            "answer_evidence_contract": SYSTEM_CONFIGS[config_id].answer_evidence_contract,
         }, code_revision=code_revision(),
         configuration_id=config_id, index_manifest_hash=sha256_tree(index_path),
         embedding_model=settings.embedding_model, embedding_dimension=vector_dimension,

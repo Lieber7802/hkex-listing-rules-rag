@@ -108,20 +108,23 @@ class SizeTestInputExtractor:
 
     def _find_best_number(self, query: str, keywords: List[str],
                           numbers: List[Tuple[float, int, int]]) -> Optional[float]:
-        candidate: Optional[Tuple[float, float]] = None
+        candidate: Optional[Tuple[int, int, float]] = None
 
         for kw in keywords:
             for m in re.finditer(kw, query, re.IGNORECASE):
-                kw_pos = m.start()
-
-                for val, num_start, _num_end in numbers:
-                    distance = abs(num_start - kw_pos)
+                for val, num_start, num_end in numbers:
+                    if num_start >= m.end():
+                        direction_penalty = 0
+                        distance = num_start - m.end()
+                    else:
+                        direction_penalty = 1
+                        distance = m.start() - num_end
                     if distance <= 80:
-                        score = 1.0 / (1.0 + distance * 0.02)
-                        if candidate is None or score > candidate[1]:
-                            candidate = (val, score)
+                        proposal = (direction_penalty, max(distance, 0), val)
+                        if candidate is None or proposal[:2] < candidate[:2]:
+                            candidate = proposal
 
-        return candidate[0] if candidate else None
+        return candidate[2] if candidate else None
 
     def _compute_confidence(self, result: Dict[str, Any]) -> float:
         req_filled = sum(1 for k in self.REQUIRED_FIELDS if k in result)

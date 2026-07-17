@@ -141,7 +141,7 @@ def paired_bootstrap_difference(
     baseline_scores: Mapping[str, float],
     agentic_scores: Mapping[str, float],
     confidence_level: float = 0.95,
-    bootstrap_samples: int = 5000,
+    bootstrap_samples: int = 10000,
     seed: int = 42,
 ) -> PairedDifferenceSummary:
     if not 0.0 < confidence_level < 1.0:

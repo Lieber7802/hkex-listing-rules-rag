@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="deepseek-v4-flash", description="LLM model name")
     llm_api_key: Optional[str] = Field(default=None, description="LLM API key")
     llm_base_url: Optional[str] = Field(default="https://api.deepseek.com", description="LLM base URL")
+    llm_timeout_seconds: float = Field(default=60.0, gt=0, description="Per-request timeout for the shared LLM client")
     
     retrieval_top_k_bm25: int = Field(default=20, description="Top-k for BM25 retrieval")
     retrieval_top_k_dense: int = Field(default=20, description="Top-k for dense retrieval")

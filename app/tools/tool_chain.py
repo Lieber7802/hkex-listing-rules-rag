@@ -23,6 +23,7 @@ TOOL_CHAINS: Dict[str, List[Dict[str, Any]]] = {
                 "is_connected": False,
                 "transaction_type": "acquisition",
             },
+            "context_passthrough": ["connected_party_type"],
             "required_output_fields": ["highest_ratio"],
             "condition": lambda output: output.get("highest_ratio") is not None,
         },
@@ -86,6 +87,10 @@ def resolve_chain_inputs(
         for key, value in user_context.items():
             if key in inputs or key in chain_def.get("static_defaults", {}):
                 inputs[key] = value
+
+        for key in chain_def.get("context_passthrough", []):
+            if key in user_context:
+                inputs[key] = user_context[key]
 
         return inputs
 

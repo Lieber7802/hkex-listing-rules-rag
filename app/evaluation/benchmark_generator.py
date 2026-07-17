@@ -47,6 +47,9 @@ GENERATOR_PROMPT = (
     "Generate Chinese cases directly from the evidence and mark them cross_lingual "
     "when the cited evidence is not Chinese-only."
 )
+_QUALIFIED_RULE_NUMBER_RE = re.compile(r"^\d+[A-Z]?(?:\.\d+[A-Z]?)$", re.IGNORECASE)
+_CANONICAL_RULE_FILENAMES = {"main_board.pdf", "gem.pdf"}
+_MAX_COMPARISON_PAIR_SIMILARITY = 0.80
 
 
 class CandidateGenerationManifest(StrictModel):
@@ -59,6 +62,7 @@ class CandidateGenerationManifest(StrictModel):
     seed: int
     target_multiplier: int = Field(ge=1)
     candidate_count: int = Field(ge=1)
+    excluded_reference_multi_source_count: int = Field(default=0, ge=0)
     category_counts: Dict[str, int]
     language_counts: Dict[str, int]
     difficulty_counts: Dict[str, int]
@@ -117,18 +121,30 @@ def _rule_reference(record: SourceRecord) -> RuleReference:
     )
 
 
+def _multi_source_signature(case: BenchmarkCase) -> tuple[str, ...] | None:
+    source_ids = tuple(sorted(case.source_chunk_ids))
+    return source_ids if len(source_ids) > 1 else None
+
+
 def _source_point(case_id: str, ordinal: int, record: SourceRecord) -> AnswerPoint:
     reference = _rule_reference(record)
     return AnswerPoint(
         point_id=f"{case_id}-evidence-{ordinal}",
-        text=(
-            f"Evidence excerpt from {record.ruleset.value} Rule {record.rule_number}: "
-            f"{_short_excerpt(record.text)}"
-        ),
+        text=_atomic_source_claim(record.text),
         evidence_kind=EvidenceKind.SOURCE,
         supporting_chunk_ids=[record.chunk_id],
         supporting_rules=[reference],
     )
+
+
+def _atomic_source_claim(text: str) -> str:
+    normalized = " ".join(text.split())
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", normalized)
+        if len(sentence.strip()) >= 24
+    ]
+    return _short_excerpt(sentences[0] if sentences else normalized, 360)
 
 
 def _provenance(registry: SourceRegistry, seed: int) -> GenerationProvenance:
@@ -201,9 +217,25 @@ def _tool_inputs(ordinal: int) -> Dict[str, float | int | str]:
         "acquired_assets": highest_ratio * 20,
         "acquired_profit": highest_ratio * 1.2,
         "acquired_net_assets": highest_ratio * 8,
-        "consideration_shares": 0,
         "transaction_type": transaction_type,
     }
+
+
+def _format_size_test_inputs(inputs: Mapping[str, float | int | str]) -> str:
+    fields = (
+        ("market cap", "issuer_market_cap"),
+        ("total assets", "issuer_total_assets"),
+        ("net assets", "issuer_net_assets"),
+        ("annual profit", "issuer_annual_profit"),
+        ("shares outstanding", "issuer_shares_outstanding"),
+        ("consideration", "transaction_consideration"),
+        ("acquired assets", "acquired_assets"),
+        ("acquired profit", "acquired_profit"),
+        ("acquired net assets", "acquired_net_assets"),
+        ("transaction type", "transaction_type"),
+    )
+    values = "; ".join(f"{label}: {inputs[key]}" for label, key in fields)
+    return f"Size-test inputs (HK$ millions except shares): {values}."
 
 
 def _tool_case(
@@ -233,6 +265,7 @@ def _tool_case(
             f"In the business context of {_anchor(record)}, calculate the size tests and identify the resulting "
             f"classification and disclosure steps for the {_scenario_label(record, ordinal)}."
         )
+    query += " " + _format_size_test_inputs(size_inputs)
     calls = [ExpectedToolCall(
         order=1,
         tool_name="size_test_calculator",
@@ -252,49 +285,53 @@ def _tool_case(
             query += "请按规模测试、交易分类和披露清单三个连续步骤完成分析。"
         else:
             query += " Complete the chained size-test, transaction-classification, and disclosure-checklist workflow."
-        classifier_inputs = {
-            "highest_ratio": size_output["highest_ratio"],
-            "transaction_type": size_inputs["transaction_type"],
-            "is_connected": bool(ordinal % 3 == 0),
-        }
-        if classifier_inputs["is_connected"]:
-            classifier_inputs["connected_party_type"] = "director"
-        classifier_output = classifier.run(classifier_inputs)
-        checklist_inputs = {
-            "classification": classifier_output["classification"],
-            "is_connected": classifier_inputs["is_connected"],
-            "shareholder_vote_required": classifier_output["shareholder_vote_required"],
-        }
-        checklist_output = checklist.run(checklist_inputs)
-        calls.extend([
-            ExpectedToolCall(
-                order=2,
-                tool_name="transaction_classifier",
-                inputs=classifier_inputs,
-                expected_output=classifier_output,
-            ),
-            ExpectedToolCall(
-                order=3,
-                tool_name="disclosure_checklist",
-                inputs=checklist_inputs,
-                expected_output=checklist_output,
-            ),
-        ])
-        points.extend([
-            AnswerPoint(
-                point_id=f"{case_id}-classification-result",
-                text="The classification output determines the applicable rule set and approval flags.",
-                evidence_kind=EvidenceKind.TOOL,
-                supporting_tool_call_orders=[2],
-            ),
-            AnswerPoint(
-                point_id=f"{case_id}-checklist-result",
-                text="The checklist output records the required disclosure actions and deadlines.",
-                evidence_kind=EvidenceKind.TOOL,
-                supporting_tool_call_orders=[3],
-            ),
-        ])
-        tags.append("tool_chain")
+    classifier_inputs = {
+        "highest_ratio": size_output["highest_ratio"],
+        "transaction_type": size_inputs["transaction_type"],
+        "is_connected": bool(ordinal % 3 == 0),
+    }
+    if classifier_inputs["is_connected"]:
+        classifier_inputs["connected_party_type"] = "director"
+        if language == Language.CHINESE:
+            query += " \u8fd9\u662f\u4e00\u9879\u6d89\u53ca\u8463\u4e8b\u7684\u5173\u8054\u4ea4\u6613\u3002"
+        else:
+            query += " This is a connected transaction involving a director."
+    classifier_output = classifier.run(classifier_inputs)
+    checklist_inputs = {
+        "classification": classifier_output["classification"],
+        "is_connected": classifier_inputs["is_connected"],
+        "shareholder_vote_required": classifier_output["shareholder_vote_required"],
+    }
+    checklist_output = checklist.run(checklist_inputs)
+    calls.extend([
+        ExpectedToolCall(
+            order=2,
+            tool_name="transaction_classifier",
+            inputs=classifier_inputs,
+            expected_output=classifier_output,
+        ),
+        ExpectedToolCall(
+            order=3,
+            tool_name="disclosure_checklist",
+            inputs=checklist_inputs,
+            expected_output=checklist_output,
+        ),
+    ])
+    points.extend([
+        AnswerPoint(
+            point_id=f"{case_id}-classification-result",
+            text="The classification output determines the applicable rule set and approval flags.",
+            evidence_kind=EvidenceKind.TOOL,
+            supporting_tool_call_orders=[2],
+        ),
+        AnswerPoint(
+            point_id=f"{case_id}-checklist-result",
+            text="The checklist output records the required disclosure actions and deadlines.",
+            evidence_kind=EvidenceKind.TOOL,
+            supporting_tool_call_orders=[3],
+        ),
+    ])
+    tags.append("tool_chain")
     reference = _rule_reference(record)
     return BenchmarkCase(
         case_id=case_id,
@@ -446,16 +483,38 @@ def _eligible_rule_sources(registry: SourceRegistry) -> List[SourceRecord]:
         for record in registry.records
         if record.eligible_main_benchmark
         and record.ruleset in {RuleSet.MAIN_BOARD, RuleSet.GEM}
-        and record.rule_number
+        and _is_canonical_rule_source(record)
     ]
     if not sources:
-        raise ValueError("no eligible Main Board/GEM source records with rule numbers are available")
+        raise ValueError("no eligible canonical Main Board/GEM rule-source records are available")
     return sorted(sources, key=lambda item: item.chunk_id)
+
+
+def _is_canonical_rule_source(record: SourceRecord) -> bool:
+    """Exclude paragraph-numbered decisions and summary material from formal cases.
+
+    The registry preserves a chunk's structural ``rule_number`` field for every
+    document.  In review decisions that field is often a paragraph number, not
+    an HKEX Listing Rule.  Formal benchmark questions may only name a rule when
+    it comes from the canonical Rules documents and has a fully qualified
+    number such as ``14.34`` or ``15A.22``.
+    """
+    filename = Path(record.source_path).name.casefold()
+    rule_number = record.rule_number or ""
+    text = normalize_text(record.text)
+    starts_with_rule = bool(re.match(
+        rf"^{re.escape(rule_number.casefold())}(?:\s|\(|[,:.\-])", text,
+    ))
+    return bool(
+        filename in _CANONICAL_RULE_FILENAMES
+        and _QUALIFIED_RULE_NUMBER_RE.fullmatch(rule_number)
+        and starts_with_rule
+    )
 
 
 def _graph_pairs(
     edges: Iterable[Mapping[str, object]],
-    allowed_ids: set[str],
+    records: Mapping[str, SourceRecord],
 ) -> List[Tuple[str, str]]:
     pairs: set[Tuple[str, str]] = set()
     for edge in edges:
@@ -468,11 +527,28 @@ def _graph_pairs(
             continue
         src = str(edge["src"]).removeprefix("chunk:")
         dst = str(edge["dst"]).removeprefix("chunk:")
-        if src in allowed_ids and dst in allowed_ids and src != dst:
+        if src in records and dst in records and src != dst and _pair_similarity(
+            records[src], records[dst],
+        ) < _MAX_COMPARISON_PAIR_SIMILARITY:
             pairs.add(tuple(sorted((src, dst))))
     if not pairs:
         raise ValueError("source graph does not contain connected eligible rule-source pairs")
     return sorted(pairs)
+
+
+def _pair_similarity(left: SourceRecord, right: SourceRecord) -> float:
+    left_tokens = set(normalize_text(left.text).split())
+    right_tokens = set(normalize_text(right.text).split())
+    if not left_tokens or not right_tokens:
+        return 1.0
+    overlap = len(left_tokens & right_tokens)
+    # Jaccard alone makes a complete short rule appear dissimilar to the same
+    # rule followed by a long appendix.  The containment score catches that
+    # near-duplicate comparison pair as well.
+    return max(
+        overlap / len(left_tokens | right_tokens),
+        overlap / min(len(left_tokens), len(right_tokens)),
+    )
 
 
 def _pick_unused(
@@ -518,14 +594,32 @@ def generate_candidates(
     quota: SamplingQuota,
     target_multiplier: int = 2,
     seed: int = 42,
+    case_id_prefix: str = "terra",
+    excluded_multi_source_signatures: set[tuple[str, ...]] | None = None,
 ) -> List[BenchmarkCase]:
     if target_multiplier < 1:
         raise ValueError("target_multiplier must be at least 1")
     if registry.manifest is None:
         raise ValueError("candidate generation requires a source snapshot manifest")
+    if not _slug(case_id_prefix):
+        raise ValueError("case_id_prefix must contain at least one alphanumeric character")
     sources = _eligible_rule_sources(registry)
     source_by_id = {record.chunk_id: record for record in sources}
-    pairs = _graph_pairs(graph_edges, set(source_by_id))
+    needs_source_pairs = any(
+        cell.primary_category in {
+            PrimaryCategory.COMPARISON_MULTI_HOP,
+            PrimaryCategory.MULTI_TURN_FOLLOW_UP,
+        }
+        for cell in quota.cells
+    )
+    pairs = _graph_pairs(graph_edges, source_by_id) if needs_source_pairs else []
+    excluded_multi_source_signatures = excluded_multi_source_signatures or set()
+    pairs = [
+        pair for pair in pairs
+        if tuple(sorted(pair)) not in excluded_multi_source_signatures
+    ]
+    if needs_source_pairs and not pairs:
+        raise ValueError("no eligible source pairs remain after reference-release exclusions")
     generated: List[BenchmarkCase] = []
     used_sources: Dict[Tuple[str, str], set[str]] = defaultdict(set)
     used_pairs: set[Tuple[str, str]] = set()
@@ -534,7 +628,7 @@ def generate_candidates(
     for cell in sorted(quota.cells, key=lambda item: item.key):
         for index in range(cell.count * target_multiplier):
             ordinal += 1
-            case_id = f"terra-{_slug(cell.primary_category.value)}-{cell.language.value}-{cell.difficulty.value}-{index + 1:03d}"
+            case_id = f"{_slug(case_id_prefix)}-{_slug(cell.primary_category.value)}-{cell.language.value}-{cell.difficulty.value}-{index + 1:03d}"
             category = cell.primary_category
             if category == PrimaryCategory.NEGATIVE_INSUFFICIENT:
                 source = _pick_unused(
@@ -640,7 +734,11 @@ def generate_candidates(
                     PrimaryCategory.OBLIGATION_SUMMARY: ExpectedIntent.OBLIGATION_SUMMARY,
                     PrimaryCategory.PROCEDURE_FLOW: ExpectedIntent.PROCEDURE_FLOW,
                 }[category],
-                expected_route=RouteMode.RETRIEVAL,
+                expected_route=(
+                    RouteMode.TOOL_PLUS_RETRIEVAL
+                    if category == PrimaryCategory.RULE_LOOKUP
+                    else RouteMode.RETRIEVAL
+                ),
                 answer_points=[_source_point(case_id, 1, source)],
                 expected_rules=[_rule_reference(source)],
                 source_chunk_ids=[source.chunk_id],
@@ -659,16 +757,26 @@ def generate_candidate_files(
     manifest_path: Path,
     target_multiplier: int = 2,
     seed: int = 42,
+    case_id_prefix: str = "terra",
+    reference_benchmark_path: Path | None = None,
 ) -> CandidateGenerationManifest:
     registry = SourceRegistry.load(source_registry_path)
     graph_edges = read_jsonl(graph_edges_path)
     quota = SamplingQuota.model_validate(json.loads(Path(quota_path).read_text(encoding="utf-8")))
+    excluded_signatures: set[tuple[str, ...]] = set()
+    if reference_benchmark_path:
+        for case in read_jsonl(reference_benchmark_path, BenchmarkCase):
+            signature = _multi_source_signature(case)
+            if signature:
+                excluded_signatures.add(signature)
     candidates = generate_candidates(
         registry,
         graph_edges,
         quota,
         target_multiplier=target_multiplier,
         seed=seed,
+        case_id_prefix=case_id_prefix,
+        excluded_multi_source_signatures=excluded_signatures,
     )
     write_jsonl(output_path, candidates)
     graph_stats_path = Path(graph_edges_path).with_name("graph_stats.json")
@@ -683,6 +791,7 @@ def generate_candidate_files(
         seed=seed,
         target_multiplier=target_multiplier,
         candidate_count=len(candidates),
+        excluded_reference_multi_source_count=len(excluded_signatures),
         category_counts=dict(Counter(case.primary_category.value for case in candidates)),
         language_counts=dict(Counter(case.language.value for case in candidates)),
         difficulty_counts=dict(Counter(case.difficulty.value for case in candidates)),
