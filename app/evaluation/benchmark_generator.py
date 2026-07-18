@@ -44,6 +44,9 @@ GENERATOR_MODEL = "codex-5.6-terra"
 GENERATOR_PROMPT = (
     "Generate source-grounded HKEX benchmark candidates from frozen, eligible evidence. "
     "Keep every claim bound to exact chunk IDs and do not add unstated legal conclusions. "
+    "For pure calculation cases, bind answer points to deterministic tool outputs and do not "
+    "attach unrelated regulatory evidence. For tool-plus-retrieval cases, use only regulatory "
+    "sources that directly address the requested transaction classification or disclosure result. "
     "Generate Chinese cases directly from the evidence and mark them cross_lingual "
     "when the cited evidence is not Chinese-only."
 )
@@ -238,6 +241,58 @@ def _format_size_test_inputs(inputs: Mapping[str, float | int | str]) -> str:
     return f"Size-test inputs (HK$ millions except shares): {values}."
 
 
+def _pure_size_test_case(
+    case_id: str,
+    language: Language,
+    difficulty: Difficulty,
+    ordinal: int,
+    registry: SourceRegistry,
+    seed: int,
+) -> BenchmarkCase:
+    """Create a tool-only case whose gold evidence is the calculator output."""
+    size_inputs = _tool_inputs(ordinal)
+    size_output = SizeTestCalculatorTool().run(size_inputs)
+    if "error" in size_output:
+        raise RuntimeError(f"generated size-test inputs are invalid: {size_output}")
+
+    if language == Language.CHINESE:
+        query = (
+            "\u8bf7\u6839\u636e\u4e0b\u5217\u6570\u503c\u8ba1\u7b97\u8be5\u4ea4\u6613\u7684\u89c4\u6a21\u6d4b\u8bd5\u7ed3\u679c\u3002 "
+            + _format_size_test_inputs(size_inputs)
+        )
+    else:
+        query = "Calculate the size-test result from the following inputs. " + _format_size_test_inputs(size_inputs)
+
+    call = ExpectedToolCall(
+        order=1,
+        tool_name="size_test_calculator",
+        inputs=size_inputs,
+        expected_output=size_output,
+        numeric_tolerances={"highest_ratio": 0.01},
+    )
+    point = AnswerPoint(
+        point_id=f"{case_id}-size-result",
+        text="The calculator returns the highest ratio and suggested classification for the supplied inputs.",
+        evidence_kind=EvidenceKind.TOOL,
+        supporting_tool_call_orders=[1],
+    )
+    return BenchmarkCase(
+        case_id=case_id,
+        case_type=CaseType.TOOL,
+        query=query,
+        language=language,
+        primary_category=PrimaryCategory.SIZE_TEST_CALCULATION,
+        capability_tags=_case_tags(language, "tool", "size_test", "tool_only"),
+        difficulty=difficulty,
+        as_of=registry.manifest.snapshot_date,
+        expected_intent=ExpectedIntent.CALCULATION_REQUIRED,
+        expected_route=RouteMode.TOOL_ONLY,
+        answer_points=[point],
+        expected_tool_calls=[call],
+        provenance=_provenance(registry, seed),
+    )
+
+
 def _tool_case(
     case_id: str,
     category: PrimaryCategory,
@@ -266,6 +321,10 @@ def _tool_case(
             f"classification and disclosure steps for the {_scenario_label(record, ordinal)}."
         )
     query += " " + _format_size_test_inputs(size_inputs)
+    query += (
+        f" Apply the regulatory consequence evidenced by {record.ruleset.value.replace('_', ' ')} "
+        f"Rule {record.rule_number}."
+    )
     calls = [ExpectedToolCall(
         order=1,
         tool_name="size_test_calculator",
@@ -288,7 +347,7 @@ def _tool_case(
     classifier_inputs = {
         "highest_ratio": size_output["highest_ratio"],
         "transaction_type": size_inputs["transaction_type"],
-        "is_connected": bool(ordinal % 3 == 0),
+        "is_connected": False,
     }
     if classifier_inputs["is_connected"]:
         classifier_inputs["connected_party_type"] = "director"
@@ -331,6 +390,7 @@ def _tool_case(
             supporting_tool_call_orders=[3],
         ),
     ])
+    points.append(_source_point(case_id, len(points) + 1, record))
     tags.append("tool_chain")
     reference = _rule_reference(record)
     return BenchmarkCase(
@@ -490,6 +550,31 @@ def _eligible_rule_sources(registry: SourceRegistry) -> List[SourceRecord]:
     return sorted(sources, key=lambda item: item.chunk_id)
 
 
+def _notifiable_transaction_sources(registry: SourceRegistry) -> List[SourceRecord]:
+    """Return canonical Rules chunks that can ground a Chapter 14/19 tool consequence."""
+    keywords = (
+        "notifiable transaction",
+        "percentage ratio",
+        "percentage ratios",
+        "classification",
+        "shareholder approval",
+        "shareholders' approval",
+        "circular",
+        "announcement",
+    )
+    sources = []
+    for record in _eligible_rule_sources(registry):
+        prefix = "14." if record.ruleset == RuleSet.MAIN_BOARD else "19."
+        if not (record.rule_number or "").startswith(prefix):
+            continue
+        text = normalize_text(record.text)
+        if any(keyword in text for keyword in keywords):
+            sources.append(record)
+    if not sources:
+        raise ValueError("no canonical transaction-classification sources are available")
+    return sorted(sources, key=lambda item: item.chunk_id)
+
+
 def _is_canonical_rule_source(record: SourceRecord) -> bool:
     """Exclude paragraph-numbered decisions and summary material from formal cases.
 
@@ -604,6 +689,7 @@ def generate_candidates(
     if not _slug(case_id_prefix):
         raise ValueError("case_id_prefix must contain at least one alphanumeric character")
     sources = _eligible_rule_sources(registry)
+    tool_sources = _notifiable_transaction_sources(registry)
     source_by_id = {record.chunk_id: record for record in sources}
     needs_source_pairs = any(
         cell.primary_category in {
@@ -641,9 +727,14 @@ def generate_candidates(
                     case_id, cell.language, cell.difficulty, ordinal, registry, seed, source
                 ))
                 continue
-            if category in {PrimaryCategory.SIZE_TEST_CALCULATION, PrimaryCategory.TOOL_CHAIN}:
+            if category == PrimaryCategory.SIZE_TEST_CALCULATION:
+                generated.append(_pure_size_test_case(
+                    case_id, cell.language, cell.difficulty, ordinal, registry, seed
+                ))
+                continue
+            if category == PrimaryCategory.TOOL_CHAIN:
                 source = _pick_unused(
-                    sources,
+                    tool_sources,
                     f"{category.value}:{cell.language.value}",
                     index,
                     used_sources[(category.value, cell.language.value)],

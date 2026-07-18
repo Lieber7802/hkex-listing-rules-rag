@@ -275,6 +275,48 @@ def test_llm_judge_retries_an_empty_response_before_accepting_json():
     assert completions.calls == 2
 
 
+def test_llm_judge_retries_a_self_contradictory_score_before_accepting_json():
+    case = answerable_case()
+    valid = {
+        "source_support": 5,
+        "expected_rules_valid": 5,
+        "answer_points_grounded": 5,
+        "category_fit": 5,
+        "difficulty_fit": 5,
+        "language_correct": True,
+        "no_unsupported_claims": True,
+        "answer_point_results": [{
+            "point_id": case.answer_points[0].point_id,
+            "supported": True,
+            "supporting_chunk_ids": ["chunk-main"],
+            "reason": "Supported",
+        }],
+        "issues": [],
+        "judge_reason": "Valid",
+    }
+    inconsistent = dict(valid, source_support=1, answer_points_grounded=1)
+
+    class _RetryingCompletions:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            payload = inconsistent if self.calls == 1 else valid
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+                content=json.dumps(payload),
+            ))])
+
+    completions = _RetryingCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    assessment = LLMBenchmarkJudge(
+        model="independent-judge", client=client, max_attempts=2,
+    ).assess(case, _registry())
+
+    assert assessment.answer_points_grounded == 5
+    assert completions.calls == 2
+
+
 def test_llm_judge_rejects_same_model_as_generator():
     case = answerable_case()
     with pytest.raises(ValueError, match="must differ"):

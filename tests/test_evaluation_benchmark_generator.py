@@ -88,11 +88,32 @@ def test_generated_tool_cases_include_the_required_calculation_inputs_in_the_que
     assert "total assets" in query
     assert "consideration" in query
     assert "acquisition" in query or "disposal" in query
+    assert [call.tool_name for call in tool_case.expected_tool_calls] == ["size_test_calculator"]
+    assert tool_case.expected_route == RouteMode.TOOL_ONLY
+    assert tool_case.source_chunk_ids == []
+    assert tool_case.expected_rules == []
+
+
+def test_generated_tool_chain_uses_regulatory_evidence_in_addition_to_tool_outputs():
+    quota = SamplingQuota(cells=[
+        QuotaCell(
+            primary_category=PrimaryCategory.TOOL_CHAIN,
+            language=Language.ENGLISH,
+            difficulty=Difficulty.MEDIUM,
+            count=1,
+        ),
+    ])
+    tool_case = generate_candidates(_registry(), _edges(), quota, target_multiplier=1, seed=7)[0]
+
     assert [call.tool_name for call in tool_case.expected_tool_calls] == [
         "size_test_calculator",
         "transaction_classifier",
         "disclosure_checklist",
     ]
+    assert tool_case.expected_route == RouteMode.TOOL_PLUS_RETRIEVAL
+    assert len(tool_case.source_chunk_ids) == 1
+    assert any(point.evidence_kind.value == "source" for point in tool_case.answer_points)
+    assert any(point.evidence_kind.value == "tool" for point in tool_case.answer_points)
 
 
 def test_generated_source_answer_points_are_atomic_claims_not_full_evidence_excerpts():

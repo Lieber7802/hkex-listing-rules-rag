@@ -38,6 +38,16 @@ def build_judge_prompt(
         "Use null for source_support, expected_rules_valid, or answer_points_grounded "
         "only when that dimension is genuinely not applicable to the case type. "
         "Every required answer point must have one answer_point_results entry.\n\n"
+        "Evidence contract:\n"
+        "- A source-backed answer point is supported only by its declared supporting_chunk_ids.\n"
+        "- A tool-backed answer point is supported by the matching expected_tool_calls and their "
+        "deterministic expected_output. It must not be rejected merely because it has no source chunk.\n"
+        "- A tool-only case may legitimately have no source_chunk_ids and no expected_rules.\n"
+        "- A tool-plus-retrieval case may contain both source-backed and tool-backed answer points; "
+        "score each point against its declared evidence kind.\n"
+        "- Minimal verbatim rule statements are valid answer points when they directly state the "
+        "requested obligation or procedure; do not require stylistic paraphrasing.\n"
+        "Keep scores, answer_point_results, issues, and judge_reason mutually consistent.\n\n"
         "Required JSON keys:\n"
         "source_support, expected_rules_valid, answer_points_grounded, category_fit, "
         "difficulty_fit, language_correct, no_unsupported_claims, answer_point_results, "
@@ -104,6 +114,7 @@ class LLMBenchmarkJudge:
                 if not isinstance(payload, dict):
                     raise ValueError("judge response is not a JSON object")
                 payload = _normalize_response_payload(payload, case)
+                _validate_assessment_consistency(payload, case)
                 payload.update({
                     "case_hash": case.content_hash(),
                     "judge_model": self.model,
@@ -179,6 +190,38 @@ def _normalize_response_payload(
         })
     normalized["answer_point_results"] = results
     return normalized
+
+
+def _validate_assessment_consistency(
+    payload: Dict[str, Any],
+    case: BenchmarkCase,
+) -> None:
+    """Reject self-contradictory judge output so a bounded retry can repair it."""
+    points = {
+        point.point_id: point
+        for point in [*case.answer_points, *(point for turn in case.turns for point in turn.answer_points)]
+        if point.required
+    }
+    results = {result.get("point_id"): result for result in payload.get("answer_point_results", [])}
+    missing = sorted(set(points) - set(results))
+    if missing:
+        raise ValueError(f"judge response omits required answer-point results: {missing}")
+
+    supported = [bool(results[point_id].get("supported")) for point_id in points]
+    grounded_score = payload.get("answer_points_grounded")
+    if all(supported) and isinstance(grounded_score, int) and grounded_score < 4:
+        raise ValueError("judge grounding score conflicts with supported required answer points")
+    if not all(supported) and isinstance(grounded_score, int) and grounded_score >= 4:
+        raise ValueError("judge grounding score conflicts with unsupported required answer points")
+
+    source_points = [
+        point_id for point_id, point in points.items()
+        if point.supporting_chunk_ids
+    ]
+    source_score = payload.get("source_support")
+    if source_points and all(bool(results[point_id].get("supported")) for point_id in source_points):
+        if isinstance(source_score, int) and source_score < 4:
+            raise ValueError("judge source-support score conflicts with supported source answer points")
 
 
 def _as_boolean(value: Any) -> bool:
