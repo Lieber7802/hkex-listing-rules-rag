@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -565,8 +566,14 @@ class BenchmarkValidator:
         query = _case_query_text(case)
         best_case_id: Optional[str] = None
         best_similarity = 0.0
+        tool_signature = self._tool_input_signature(case)
         for existing in accepted_cases:
             if existing.case_id == case.case_id:
+                continue
+            existing_signature = self._tool_input_signature(existing)
+            if tool_signature and existing_signature and tool_signature != existing_signature:
+                # Numerically different deterministic tool calls represent distinct tasks even
+                # when their user-facing wording follows the same scenario template.
                 continue
             similarity = _query_similarity(query, _case_query_text(existing))
             if similarity > best_similarity:
@@ -591,6 +598,19 @@ class BenchmarkValidator:
             similarity=round(best_similarity, 6),
             threshold=self.config.duplicate_threshold,
             method="normalized_sequence_or_token_jaccard_v1",
+        )
+
+    def _tool_input_signature(self, case: BenchmarkCase) -> Tuple[Tuple[int, str, str], ...]:
+        calls = self._all_tool_calls(case)
+        if not calls:
+            return ()
+        return tuple(
+            (
+                call.order,
+                call.tool_name,
+                json.dumps(call.inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            )
+            for call in sorted(calls, key=lambda item: item.order)
         )
 
     def _validate_judge(

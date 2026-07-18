@@ -307,6 +307,20 @@ def test_tool_case_recomputes_expected_output_with_tolerance():
     assert record.accepted is True
     assert _check(record, "tool_expectations").status.value == "pass"
 
+    varied_inputs = dict(call.inputs)
+    varied_inputs["transaction_consideration"] = 300
+    varied_case = case.model_copy(update={
+        "case_id": "tool-2",
+        "expected_tool_calls": [call.model_copy(update={"inputs": varied_inputs})],
+    })
+    varied_record = BenchmarkValidator(_registry()).validate_case(
+        varied_case,
+        accepted_cases=[case],
+        judge_assessment=passing_judge(varied_case),
+    )
+
+    assert _check(varied_record, "duplicate_detection").status.value == "pass"
+
 
 def test_nonexistent_rule_negative_case_does_not_require_source_support():
     case = BenchmarkCase(
