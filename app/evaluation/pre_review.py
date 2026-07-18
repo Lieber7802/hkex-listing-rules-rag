@@ -23,12 +23,15 @@ def select_pre_review_cases(
     validation_records: Iterable[ValidationRecord],
     quota: SamplingQuota,
     seed: int,
+    review_state: str = "pending_human_approval",
 ) -> Tuple[List[BenchmarkCase], Dict[str, object]]:
-    """Select a fixed-seed human-review set from statically valid candidates.
+    """Select a fixed-seed review set from statically valid candidates.
 
     This function deliberately never changes ``ValidationRecord.accepted``. Human
     approval remains a mandatory final gate handled by ``validate_benchmark.py``.
     """
+    if review_state not in {"pending_human_approval", "pending_automated_review"}:
+        raise ValueError(f"unsupported review_state: {review_state}")
     records = {record.case_id: record for record in validation_records}
     candidates = [
         case for case in cases
@@ -68,7 +71,7 @@ def select_pre_review_cases(
         "category_distribution": _distribution(selected, lambda case: case.primary_category.value),
         "language_distribution": _distribution(selected, lambda case: case.language.value),
         "difficulty_distribution": _distribution(selected, lambda case: case.difficulty.value),
-        "review_state": "pending_human_approval",
+        "review_state": review_state,
     }
     return selected, manifest
 

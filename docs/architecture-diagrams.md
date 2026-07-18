@@ -6,8 +6,8 @@
 
 The production `/chat` and `/chat/stream` endpoints use
 `app/agents/agentic_workflow.py`. It is an eight-node LangGraph workflow with a
-heuristic `PlannerAgent`; it does not use the removed LLM route validator or task
-decomposer.
+LLM-primary `PlannerAgent` with deterministic heuristic fallback; it does not
+use the removed route validator or task decomposer.
 
 ```mermaid
 flowchart TD
@@ -35,7 +35,8 @@ and before/after coverage.
 
 `evidence_selector` is the evidence boundary for downstream processing. Answer
 synthesis, citation formatting, and answer verification all consume the selected
-chunks. Tool-only requests bypass retrieval and coverage as before.
+chunks. Rule-lookup tool evidence is normalized into this same selected-evidence
+boundary. Tool-only requests bypass retrieval and coverage as before.
 
 > The diagrams below document earlier prototypes and are retained for historical
 > context. References to `llm_route_planner_node`, `route_validator_node`,
@@ -88,9 +89,9 @@ chunks. Tool-only requests bypass retrieval and coverage as before.
 
 ---
 
-## 2. V1 工作流程图 (生产环境)
+## 2. 早期原型工作流程图 (生产环境)
 
-V1 是当前生产环境使用的工作流，通过 `POST /chat` 暴露。使用启发式 (heuristic) Planner 进行查询分类。
+早期原型工作流已被当前 Agentic RAG 工作流取代。使用启发式 (heuristic) Planner 进行查询分类。
 
 ```
                             ┌─────────────┐
@@ -177,7 +178,7 @@ V1 是当前生产环境使用的工作流，通过 `POST /chat` 暴露。使用
                                             └──────────────┘
 ```
 
-### V1 条件路由逻辑 (`should_continue`)
+### 早期原型条件路由逻辑 (`should_continue`)
 
 ```python
 def should_continue(state):
@@ -192,9 +193,9 @@ def should_continue(state):
 
 ---
 
-## 3. V2 工作流程图 (高级版)
+## 3. Agentic RAG 工作流程图
 
-V2 在 V1 基础上增加了 **LLM 路由决策** 和 **任务分解** 阶段，支持更复杂的多跳推理。
+Agentic RAG 工作流增加了 **LLM 路由决策** 和 **任务分解** 阶段，支持更复杂的多跳推理。
 
 ```
                             ┌──────────────┐
@@ -392,11 +393,11 @@ V2 在 V1 基础上增加了 **LLM 路由决策** 和 **任务分解** 阶段，
                     └───────────────────────┘
 ```
 
-### 4.4 V2 LLM 路由 + 回退机制
+### 4.4 Agentic RAG 路由 + 回退机制
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                  V2 LLM Route Planning                           │
+│                  Agentic RAG Route Planning                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │   ┌─────────────┐                                               │
@@ -763,10 +764,10 @@ LangGraph 使用 **Annotated Reducer** 模式管理状态。关键点在于 `ret
 └────────────────────────────────────────────────────────┘
 ```
 
-### 9.2 LangGraph 图定义 (V1)
+### 9.2 LangGraph 图定义（早期原型）
 
 ```python
-# 简化的 V1 图结构
+# 简化的早期原型图结构
 graph = StateGraph(AgentState)
 
 # 添加节点
@@ -809,12 +810,12 @@ graph.add_edge("answer_verifier",  END)
 │                                                                    │
 │  ┌──────────────────┐    FAIL    ┌──────────────────────────┐     │
 │  │ LLM Route Planner│ ─────────▶ │ Heuristic PlannerAgent   │     │
-│  │ (V2)            │            │ (Regex-based classify)    │     │
+│  │ (Agentic RAG)            │            │ (Regex-based classify)    │     │
 │  └──────────────────┘            └──────────────────────────┘     │
 │                                                                    │
 │  ┌──────────────────┐    FAIL    ┌──────────────────────────┐     │
 │  │ LLM Decomposer  │ ─────────▶ │ Pattern Split (and/or)   │     │
-│  │ (V2)            │            │ Simple fragment tasks     │     │
+│  │ (Agentic RAG)            │            │ Simple fragment tasks     │     │
 │  └──────────────────┘            └──────────────────────────┘     │
 │                                                                    │
 │  ┌──────────────────┐    FAIL    ┌──────────────────────────┐     │

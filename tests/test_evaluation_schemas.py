@@ -4,6 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.evaluation.schemas import (
+    AutomatedReview,
+    AutomatedValidationRecord,
     AnswerPoint,
     BenchmarkCase,
     CaseType,
@@ -14,6 +16,7 @@ from app.evaluation.schemas import (
     ExpectedIntent,
     ExpectedToolCall,
     HumanReview,
+    JudgeAssessment,
     Language,
     NegativeExpectation,
     NegativeReason,
@@ -158,6 +161,58 @@ def test_validation_record_rejects_stale_review_hash_on_revalidation():
     assert any("review hashes" in reason for reason in revalidated.rejection_reasons)
 
 
+def test_automated_validation_is_explicitly_separate_from_human_review():
+    case = answerable_case()
+    required_checks = [
+        "schema",
+        "source_snapshot",
+        "language",
+        "source_eligibility",
+        "answer_point_mapping",
+        "rule_references",
+        "case_type_profile",
+        "tool_expectations",
+        "duplicate_detection",
+        "judge_assessment",
+        "automated_review",
+    ]
+    record = AutomatedValidationRecord(
+        case_id=case.case_id,
+        case_hash=case.content_hash(),
+        checks=[
+            ValidationCheck(check_name=name, status=CheckStatus.PASS, message=f"{name} passed")
+            for name in required_checks
+        ],
+        judge_assessment=JudgeAssessment(
+            case_hash=case.content_hash(),
+            judge_model="independent-judge",
+            judge_prompt_hash="1" * 64,
+            category_fit=5,
+            difficulty_fit=5,
+            language_correct=True,
+            no_unsupported_claims=True,
+            judge_reason="approved",
+        ),
+        automated_reviews=[
+            AutomatedReview(
+                case_hash=case.content_hash(),
+                reviewer_id="automated-agent-a",
+                reviewer_kind="subagent",
+                review_protocol="r2-automated-agent-review-v1",
+                review_model="test-automation",
+                review_prompt_hash="2" * 64,
+                status=ReviewStatus.APPROVED,
+                verified_dimensions=["source_support", "rule_references"],
+                verified_chunk_ids=list(case.source_chunk_ids),
+            )
+        ],
+    )
+
+    assert record.accepted is True
+    assert record.review_mode == "automated_only"
+    assert not hasattr(record, "human_reviews")
+
+
 def test_numeric_tolerances_must_be_non_negative():
     with pytest.raises(ValidationError, match="non-negative"):
         ExpectedToolCall(
@@ -167,3 +222,45 @@ def test_numeric_tolerances_must_be_non_negative():
             expected_output={"highest_ratio": 20.0},
             numeric_tolerances={"highest_ratio": -0.1},
         )
+
+
+def test_automated_validation_is_explicitly_separate_from_human_approval():
+    case = answerable_case()
+    checks = [
+        ValidationCheck(check_name=name, status=CheckStatus.PASS, message=f"{name} passed")
+        for name in (
+            "schema",
+            "source_snapshot",
+            "language",
+            "source_eligibility",
+            "answer_point_mapping",
+            "rule_references",
+            "case_type_profile",
+            "tool_expectations",
+            "duplicate_detection",
+            "judge_assessment",
+            "automated_review",
+        )
+    ]
+    review = AutomatedReview(
+        case_hash=case.content_hash(),
+        reviewer_id="audit-agent",
+        reviewer_kind="llm_subagent",
+        review_protocol="r2-automated-audit-v1",
+        review_model="audit-model",
+        review_prompt_hash="a" * 64,
+        status=ReviewStatus.APPROVED,
+        verified_dimensions=["source_support", "rule_references"],
+        verified_chunk_ids=["chunk-main"],
+    )
+    record = AutomatedValidationRecord(
+        case_id=case.case_id,
+        case_hash=case.content_hash(),
+        checks=checks,
+        judge_assessment=accepted_validation(case).judge_assessment,
+        automated_reviews=[review],
+    )
+
+    assert record.accepted is True
+    assert record.review_mode == "automated_only"
+    assert "human" not in " ".join(record.rejection_reasons).lower()

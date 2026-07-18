@@ -23,9 +23,20 @@ class ExperimentConfig:
 
 SYSTEM_CONFIGS = {
     "B3": ExperimentConfig("B3", "traditional_hybrid_rag", "none", False, False, 1),
-    "A1": ExperimentConfig("A1", "agentic_rag", "llm_primary", True, True, 2),
-    "A2": ExperimentConfig("A2", "agentic_no_coverage_retry", "llm_primary", True, False, 1),
-    "A3": ExperimentConfig("A3", "agentic_no_tools", "llm_primary", False, True, 2),
+    # A1 is the production workflow. Ablations retain these policies and vary
+    # only the feature named by their configuration label.
+    "A1": ExperimentConfig(
+        "A1", "agentic_rag", "llm_primary", True, True, 2,
+        "coverage_aware", "regulatory_grounded", "coverage_grounded",
+    ),
+    "A2": ExperimentConfig(
+        "A2", "agentic_no_coverage_retry", "llm_primary", True, False, 1,
+        "coverage_aware", "regulatory_grounded", "coverage_grounded",
+    ),
+    "A3": ExperimentConfig(
+        "A3", "agentic_no_tools", "llm_primary", False, True, 2,
+        "coverage_aware", "regulatory_grounded", "coverage_grounded",
+    ),
     "A1-legacy": ExperimentConfig(
         "A1-legacy", "agentic_rag_legacy", "llm_primary", True, True, 2,
         "legacy", "legacy", "legacy",

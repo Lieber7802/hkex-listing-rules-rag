@@ -72,6 +72,24 @@ def test_fully_validated_answerable_case_is_accepted():
     assert all(check.status.value in {"pass", "not_applicable"} for check in record.checks)
 
 
+def test_source_backed_answer_points_cannot_end_with_a_truncated_excerpt():
+    case = answerable_case()
+    truncated_case = case.model_copy(update={
+        "answer_points": [
+            case.answer_points[0].model_copy(update={"text": "A truncated legal claim..."})
+        ],
+    })
+
+    record = BenchmarkValidator(_registry()).validate_case(
+        truncated_case,
+        judge_assessment=passing_judge(truncated_case),
+        human_reviews=[approved_review(truncated_case)],
+    )
+
+    assert _check(record, "answer_point_mapping").status.value == "fail"
+    assert "truncated excerpt" in _check(record, "answer_point_mapping").details["errors"][0]
+
+
 def test_human_approval_is_mandatory_and_must_cover_required_dimensions():
     case = answerable_case()
     validator = BenchmarkValidator(_registry())

@@ -9,8 +9,10 @@ from app.evaluation.benchmark_generator import (
     generate_candidate_files,
     generate_candidates,
 )
+from app.evaluation.benchmark_validator import BenchmarkValidator
+from app.evaluation.benchmark_validator import _query_similarity
 from app.evaluation.sampling import QuotaCell, SamplingQuota
-from app.evaluation.schemas import Difficulty, Language, PrimaryCategory, RouteMode
+from app.evaluation.schemas import CheckStatus, Difficulty, Language, PrimaryCategory, RouteMode
 from app.evaluation.source_registry import SourceRegistry, build_source_registry
 
 
@@ -114,6 +116,30 @@ def test_generated_tool_chain_uses_regulatory_evidence_in_addition_to_tool_outpu
     assert len(tool_case.source_chunk_ids) == 1
     assert any(point.evidence_kind.value == "source" for point in tool_case.answer_points)
     assert any(point.evidence_kind.value == "tool" for point in tool_case.answer_points)
+    classifier_call = next(
+        call for call in tool_case.expected_tool_calls
+        if call.tool_name == "transaction_classifier"
+    )
+    assert tool_case.expected_rules[0].rule_number in classifier_call.expected_output["applicable_rules"]
+
+
+def test_tool_chain_queries_remain_distinct_when_the_same_rule_source_is_reused():
+    quota = SamplingQuota(cells=[
+        QuotaCell(
+            primary_category=PrimaryCategory.TOOL_CHAIN,
+            language=Language.ENGLISH,
+            difficulty=Difficulty.MEDIUM,
+            count=8,
+        ),
+    ])
+    candidates = generate_candidates(_registry(), _edges(), quota, target_multiplier=1, seed=7)
+
+    similarities = [
+        _query_similarity(left.query, right.query)
+        for index, left in enumerate(candidates)
+        for right in candidates[index + 1:]
+    ]
+    assert max(similarities) < 0.9
 
 
 def test_generated_source_answer_points_are_atomic_claims_not_full_evidence_excerpts():
@@ -135,6 +161,51 @@ def test_rule_lookup_candidates_expect_the_agentic_rule_lookup_route():
     rule_case = next(case for case in candidates if case.primary_category == PrimaryCategory.RULE_LOOKUP)
 
     assert rule_case.expected_route == RouteMode.TOOL_PLUS_RETRIEVAL
+
+
+def test_complex_candidates_score_the_capability_they_claim_to_measure():
+    comparison_quota = SamplingQuota(cells=[
+        QuotaCell(
+            primary_category=PrimaryCategory.COMPARISON_MULTI_HOP,
+            language=Language.ENGLISH,
+            difficulty=Difficulty.MEDIUM,
+            count=1,
+        ),
+    ])
+    multi_turn_quota = SamplingQuota(cells=[
+        QuotaCell(
+            primary_category=PrimaryCategory.MULTI_TURN_FOLLOW_UP,
+            language=Language.ENGLISH,
+            difficulty=Difficulty.MEDIUM,
+            count=1,
+        ),
+    ])
+    comparison = generate_candidates(_registry(), _edges(), comparison_quota, target_multiplier=1, seed=7)[0]
+    multi_turn = generate_candidates(_registry(), _edges(), multi_turn_quota, target_multiplier=1, seed=7)[0]
+
+    assert any(len(point.supporting_chunk_ids) == 2 for point in comparison.answer_points)
+    assert "distinguish" in comparison.query.lower()
+    assert multi_turn.turns[1].depends_on_turn == 1
+    assert "previous answer" in multi_turn.turns[1].query.lower()
+    assert any(
+        len(point.supporting_chunk_ids) == 2
+        for point in multi_turn.turns[1].answer_points
+    )
+
+    validator = BenchmarkValidator(_registry())
+    assert validator._validate_type_profile(comparison).status == CheckStatus.PASS
+    assert validator._validate_type_profile(multi_turn).status == CheckStatus.PASS
+    unscorable_comparison = comparison.model_copy(update={
+        "answer_points": comparison.answer_points[:2],
+    })
+    unscorable_follow_up = multi_turn.model_copy(update={
+        "turns": [
+            multi_turn.turns[0],
+            multi_turn.turns[1].model_copy(update={"answer_points": []}),
+        ],
+    })
+    assert validator._validate_type_profile(unscorable_comparison).status == CheckStatus.FAIL
+    assert validator._validate_type_profile(unscorable_follow_up).status == CheckStatus.FAIL
 
 
 def test_generator_excludes_decision_paragraph_numbers_from_formal_rule_sources():

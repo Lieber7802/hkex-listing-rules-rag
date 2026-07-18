@@ -6,13 +6,20 @@ from pathlib import Path
 from app.evaluation.dataset_loader import read_jsonl, write_jsonl
 from app.evaluation.sampling import QuotaCell, SamplingQuota
 from app.evaluation.schemas import (
+    AutomatedReview,
+    AutomatedValidationRecord,
     BenchmarkCase,
     Difficulty,
     Language,
     PrimaryCategory,
     ValidationRecord,
 )
-from tests.evaluation_helpers import answerable_case, approved_review, passing_judge
+from tests.evaluation_helpers import (
+    accepted_validation,
+    answerable_case,
+    approved_review,
+    passing_judge,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -135,3 +142,46 @@ def test_snapshot_validate_and_sample_cli_round_trip(tmp_path):
     assert sample.returncode == 0, sample.stderr
     assert read_jsonl(benchmark_output, BenchmarkCase)[0].case_id == case.case_id
     assert json.loads(sampling_manifest.read_text(encoding="utf-8"))["seed"] == 42
+
+
+def test_automated_only_validation_cli_keeps_human_review_separate(tmp_path):
+    case = answerable_case()
+    candidates = tmp_path / "candidates.jsonl"
+    static_validation = tmp_path / "static-validation.jsonl"
+    automated_reviews = tmp_path / "automated-reviews.jsonl"
+    automated_validation = tmp_path / "automated-validation.jsonl"
+    accepted = tmp_path / "accepted.jsonl"
+    write_jsonl(candidates, [case])
+    write_jsonl(static_validation, [accepted_validation(case)])
+    review = AutomatedReview(
+        case_hash=case.content_hash(),
+        reviewer_id="audit-agent",
+        reviewer_kind="llm_subagent",
+        review_protocol="r2-automated-audit-v1",
+        review_model="audit-model",
+        review_prompt_hash="a" * 64,
+        status="approved",
+        verified_dimensions=["source_support", "rule_references"],
+        verified_chunk_ids=list(case.source_chunk_ids),
+        notes="Automated source audit passed.",
+    )
+    write_jsonl(automated_reviews, [{
+        "case_id": case.case_id,
+        "automated_review": review.model_dump(mode="json"),
+    }])
+
+    validate = _run(
+        "scripts/validate_automated_review_release.py",
+        "--candidates", candidates,
+        "--static-validation", static_validation,
+        "--automated-reviews", automated_reviews,
+        "--validation-output", automated_validation,
+        "--accepted-output", accepted,
+        "--require-accepted", "1",
+    )
+
+    assert validate.returncode == 0, validate.stderr
+    record = read_jsonl(automated_validation, AutomatedValidationRecord)[0]
+    assert record.accepted is True
+    assert record.review_mode == "automated_only"
+    assert read_jsonl(accepted, BenchmarkCase)[0].case_id == case.case_id

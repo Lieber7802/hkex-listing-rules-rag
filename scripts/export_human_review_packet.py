@@ -23,6 +23,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Optional completed judge JSONL. Its presence marks matching cases ready for review.",
     )
+    parser.add_argument(
+        "--review-mode",
+        choices=("human", "automated_only"),
+        default="human",
+        help="Emit a human-review packet (default) or an explicitly automated-only packet.",
+    )
     return parser.parse_args()
 
 
@@ -65,7 +71,13 @@ def main() -> None:
         records.append({
             "case_id": case.case_id,
             "case_hash": case.content_hash(),
-            "review_state": "ready_for_human_review" if case.case_id in judged_case_ids else "awaiting_independent_judge",
+            "review_state": (
+                "ready_for_human_review"
+                if args.review_mode == "human" and case.case_id in judged_case_ids
+                else "ready_for_automated_review"
+                if case.case_id in judged_case_ids
+                else "awaiting_independent_judge"
+            ),
             "query": case.query,
             "turns": [turn.model_dump(mode="json") for turn in case.turns],
             "language": case.language.value,
@@ -92,8 +104,13 @@ def main() -> None:
             },
         })
     write_jsonl(args.output, records)
-    ready = sum(record["review_state"] == "ready_for_human_review" for record in records)
-    print(f"Wrote {len(records)} review packet records; {ready} are ready for human review")
+    ready_state = (
+        "ready_for_human_review"
+        if args.review_mode == "human"
+        else "ready_for_automated_review"
+    )
+    ready = sum(record["review_state"] == ready_state for record in records)
+    print(f"Wrote {len(records)} review packet records; {ready} are ready for {args.review_mode} review")
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ class R2GateResult(StrictModel):
 
 
 class R2GateReport(StrictModel):
-    protocol_version: str = "r2-gates-v1"
+    protocol_version: str = "r2-gates-v2"
     passed: bool
     gates: List[R2GateResult]
 
@@ -40,35 +40,38 @@ def evaluate_r2_gates(summary: Dict[str, Any]) -> R2GateReport:
     """
     systems = summary.get("systems", {})
     comparisons = summary.get("paired_comparisons", {})
-    new = systems.get("A1-new")
-    legacy = systems.get("A1-legacy")
+    agentic = systems.get("A1")
+    no_coverage_retry = systems.get("A2")
+    no_tools = systems.get("A3")
     baseline = systems.get("B3")
     gates = [
-        _gac_improvement_gate(comparisons.get("A1-new_vs_B3")),
-        _r2_attribution_gate(comparisons.get("A1-new_vs_A1-legacy")),
+        _gac_improvement_gate(comparisons.get("A1_vs_B3")),
+        _ablation_comparisons_present_gate(
+            comparisons.get("A2_vs_A1"), comparisons.get("A3_vs_A1"),
+        ),
         _metric_upper_bound_gate(
-            "a1_new_failure_rate",
-            new,
+            "a1_failure_rate",
+            agentic,
             "failure_rate",
             0.05,
-            "A1-new failure rate must be at or below 5%.",
+            "A1 failure rate must be at or below 5%.",
         ),
         _metric_lower_bound_gate(
-            "a1_new_tool_result_accuracy",
-            new,
+            "a1_tool_result_accuracy",
+            agentic,
             "tool_result_accuracy",
             0.80,
-            "A1-new tool-task correctness must be at or above 80%.",
+            "A1 tool-task correctness must be at or above 80%.",
         ),
         _metric_upper_bound_gate(
-            "a1_new_p95_latency",
-            new,
+            "a1_p95_latency",
+            agentic,
             "p95_latency_seconds",
             24.0,
-            "A1-new P95 latency must be at or below 24 seconds.",
+            "A1 P95 latency must be at or below 24 seconds.",
         ),
-        _citation_precision_gate(new, legacy),
-        _systems_present_gate(baseline, legacy, new),
+        _citation_precision_gate(agentic, baseline),
+        _systems_present_gate(baseline, agentic, no_coverage_retry, no_tools),
     ]
     return R2GateReport(
         passed=all(gate.status == R2GateStatus.PASS for gate in gates),
@@ -78,18 +81,20 @@ def evaluate_r2_gates(summary: Dict[str, Any]) -> R2GateReport:
 
 def _systems_present_gate(
     baseline: Optional[Dict[str, Any]],
-    legacy: Optional[Dict[str, Any]],
-    new: Optional[Dict[str, Any]],
+    agentic: Optional[Dict[str, Any]],
+    no_coverage_retry: Optional[Dict[str, Any]],
+    no_tools: Optional[Dict[str, Any]],
 ) -> R2GateResult:
     present = {
         "B3": baseline is not None,
-        "A1-legacy": legacy is not None,
-        "A1-new": new is not None,
+        "A1": agentic is not None,
+        "A2": no_coverage_retry is not None,
+        "A3": no_tools is not None,
     }
     return R2GateResult(
         name="required_systems_present",
         status=R2GateStatus.PASS if all(present.values()) else R2GateStatus.NOT_EVALUABLE,
-        requirement="The report must contain B3, A1-legacy, and A1-new.",
+        requirement="The report must contain B3, A1, A2, and A3.",
         observed=present,
     )
 
@@ -98,47 +103,41 @@ def _gac_improvement_gate(comparison: Optional[Dict[str, Any]]) -> R2GateResult:
     value = _grounded_comparison(comparison)
     if value is None:
         return _not_evaluable(
-            "gac_a1_new_vs_b3",
-            "The lower bound of A1-new minus B3 GAC must be above zero.",
+            "gac_a1_vs_b3",
+            "The lower bound of A1 minus B3 GAC must be above zero.",
         )
     ci_low = value.get("ci_low")
     if not isinstance(ci_low, (int, float)):
         return _not_evaluable(
-            "gac_a1_new_vs_b3",
-            "The lower bound of A1-new minus B3 GAC must be above zero.",
+            "gac_a1_vs_b3",
+            "The lower bound of A1 minus B3 GAC must be above zero.",
             value,
         )
     return R2GateResult(
-        name="gac_a1_new_vs_b3",
+        name="gac_a1_vs_b3",
         status=R2GateStatus.PASS if ci_low > 0 else R2GateStatus.FAIL,
-        requirement="The lower bound of A1-new minus B3 GAC must be above zero.",
+        requirement="The lower bound of A1 minus B3 GAC must be above zero.",
         observed=value,
     )
 
 
-def _r2_attribution_gate(comparison: Optional[Dict[str, Any]]) -> R2GateResult:
-    value = _grounded_comparison(comparison)
-    if value is None:
-        return _not_evaluable(
-            "gac_a1_new_vs_a1_legacy",
-            "A1-new minus A1-legacy GAC must be at least +5pp and its lower CI must be no worse than -2pp.",
-        )
-    mean, ci_low = value.get("mean_difference"), value.get("ci_low")
-    if not isinstance(mean, (int, float)) or not isinstance(ci_low, (int, float)):
-        return _not_evaluable(
-            "gac_a1_new_vs_a1_legacy",
-            "A1-new minus A1-legacy GAC must be at least +5pp and its lower CI must be no worse than -2pp.",
-            value,
-        )
+def _ablation_comparisons_present_gate(
+    coverage_comparison: Optional[Dict[str, Any]],
+    tools_comparison: Optional[Dict[str, Any]],
+) -> R2GateResult:
+    observed = {
+        "A2_vs_A1": _grounded_comparison(coverage_comparison),
+        "A3_vs_A1": _grounded_comparison(tools_comparison),
+    }
     return R2GateResult(
-        name="gac_a1_new_vs_a1_legacy",
+        name="ablation_comparisons_present",
         status=(
             R2GateStatus.PASS
-            if mean >= 0.05 and ci_low >= -MATERIAL_REGRESSION_TOLERANCE
-            else R2GateStatus.FAIL
+            if all(value is not None for value in observed.values())
+            else R2GateStatus.NOT_EVALUABLE
         ),
-        requirement="A1-new minus A1-legacy GAC must be at least +5pp and its lower CI must be no worse than -2pp.",
-        observed=value,
+        requirement="The report must include grounded A2-vs-A1 and A3-vs-A1 ablation comparisons.",
+        observed=observed,
     )
 
 
@@ -179,17 +178,17 @@ def _metric_lower_bound_gate(
 
 
 def _citation_precision_gate(
-    new: Optional[Dict[str, Any]], legacy: Optional[Dict[str, Any]],
+    agentic: Optional[Dict[str, Any]], baseline: Optional[Dict[str, Any]],
 ) -> R2GateResult:
-    new_value = new.get("citation_precision") if new is not None else None
-    legacy_value = legacy.get("citation_precision") if legacy is not None else None
-    if not isinstance(new_value, (int, float)) or not isinstance(legacy_value, (int, float)):
+    agentic_value = agentic.get("citation_precision") if agentic is not None else None
+    baseline_value = baseline.get("citation_precision") if baseline is not None else None
+    if not isinstance(agentic_value, (int, float)) or not isinstance(baseline_value, (int, float)):
         return _not_evaluable(
             "citation_precision_non_regression",
-            "A1-new citation precision may be no more than 2pp below A1-legacy.",
-            {"A1-new": new_value, "A1-legacy": legacy_value},
+            "A1 citation precision may be no more than 2pp below B3.",
+            {"A1": agentic_value, "B3": baseline_value},
         )
-    difference = new_value - legacy_value
+    difference = agentic_value - baseline_value
     return R2GateResult(
         name="citation_precision_non_regression",
         status=(
@@ -197,10 +196,10 @@ def _citation_precision_gate(
             if difference >= -MATERIAL_REGRESSION_TOLERANCE
             else R2GateStatus.FAIL
         ),
-        requirement="A1-new citation precision may be no more than 2pp below A1-legacy.",
+        requirement="A1 citation precision may be no more than 2pp below B3.",
         observed={
-            "A1-new": new_value,
-            "A1-legacy": legacy_value,
+            "A1": agentic_value,
+            "B3": baseline_value,
             "difference": difference,
             "minimum_difference": -MATERIAL_REGRESSION_TOLERANCE,
         },

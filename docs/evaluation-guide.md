@@ -75,7 +75,7 @@ Planner → Retriever → Coverage → Evidence → Reasoning → Verifier
 | 论文需要回答的问题 | 需要的评估支撑 |
 |---|---|
 | "系统能否正确回答合规问题？" | 答案正确率 + 完整度 |
-| "Agentic 比 naive RAG 好在哪？" | 对比实验: V1 vs 单轮检索 |
+| "Agentic 比 naive RAG 好在哪？" | 对比实验: Agentic RAG vs 单轮检索 |
 | "多跳推理有效吗？" | multi_hop 类型的召回率和答案质量 |
 | "Tool 有用吗？" | 有 tool vs 无 tool 的准确率对比 |
 | "系统有什么不足？" | 错误分析 (error taxonomy) |
@@ -632,7 +632,7 @@ def run_evaluation(dataset_path, api_url):
               HKEX RAG Evaluation Report
               Date: 2026-04-30
               Dataset: benchmark_v1 (30 queries)
-              System: V1 Workflow
+              System: Agentic RAG Workflow
 ═══════════════════════════════════════════════════════════════
 
 Overall Scores:
@@ -751,7 +751,7 @@ Phase B: 答案质量评估 (2-3 天)
 Phase C: 对比实验 (1-2 天)
 ═══════════════════════════════════════
 目标: 证明系统的价值
-├── V1 workflow vs naive 单轮检索 对比
+├── Agentic RAG workflow vs naive 单轮检索 对比
 ├── 有 tool vs 无 tool 对比
 ├── 有 coverage loop vs 无 loop 对比
 ├── 生成对比图表

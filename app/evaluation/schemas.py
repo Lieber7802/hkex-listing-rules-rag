@@ -436,6 +436,36 @@ class HumanReview(StrictModel):
     adjudicates_reviewers: List[str] = Field(default_factory=list)
 
 
+class AutomatedReview(StrictModel):
+    """A review performed by an automated agent, kept separate from human review."""
+
+    case_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    reviewer_id: str = Field(min_length=1)
+    reviewer_kind: str = Field(min_length=1)
+    review_protocol: str = Field(min_length=1)
+    review_model: str = Field(min_length=1)
+    review_prompt_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    status: ReviewStatus
+    reviewed_at: datetime = Field(default_factory=utc_now)
+    verified_dimensions: List[str] = Field(default_factory=list)
+    verified_chunk_ids: List[str] = Field(default_factory=list)
+    notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_approval_evidence(self) -> "AutomatedReview":
+        if self.status == ReviewStatus.APPROVED and not self.verified_dimensions:
+            raise ValueError("automated approvals require verified_dimensions")
+        return self
+
+
 class ValidationCheck(StrictModel):
     check_name: str
     status: CheckStatus
@@ -550,6 +580,101 @@ class ValidationRecord(StrictModel):
             reasons.append("human approval is required")
         if rejected:
             reasons.append("a human reviewer rejected the case")
+
+        self.accepted = derived
+        self.rejection_reasons = list(dict.fromkeys(reasons))
+        return self
+
+
+class AutomatedValidationRecord(StrictModel):
+    """Release validation for an explicitly non-human, automated review pathway."""
+
+    case_id: str
+    case_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    checks: List[ValidationCheck]
+    judge_assessment: Optional[JudgeAssessment] = None
+    automated_reviews: List[AutomatedReview] = Field(default_factory=list)
+    acceptance_policy_version: str = "r2-automated-only-v1"
+    review_mode: str = "automated_only"
+    accepted: bool = False
+    rejection_reasons: List[str] = Field(default_factory=list)
+    validated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def derive_acceptance(self) -> "AutomatedValidationRecord":
+        required_check_names = {
+            "schema",
+            "source_snapshot",
+            "language",
+            "source_eligibility",
+            "answer_point_mapping",
+            "rule_references",
+            "case_type_profile",
+            "tool_expectations",
+            "duplicate_detection",
+            "judge_assessment",
+            "automated_review",
+        }
+        check_names = [check.check_name for check in self.checks]
+        missing_checks = sorted(required_check_names - set(check_names))
+        duplicate_checks = sorted({name for name in check_names if check_names.count(name) > 1})
+        blocking_checks = [
+            check for check in self.checks
+            if check.status not in {CheckStatus.PASS, CheckStatus.NOT_APPLICABLE}
+        ]
+        reviewer_ids = [review.reviewer_id for review in self.automated_reviews]
+        duplicate_reviewer_ids = sorted({
+            reviewer_id
+            for reviewer_id in reviewer_ids
+            if reviewer_ids.count(reviewer_id) > 1
+        })
+        review_issues: List[str] = []
+        if duplicate_reviewer_ids:
+            review_issues.append(
+                f"duplicate automated reviewer IDs: {duplicate_reviewer_ids}"
+            )
+        if any(review.case_hash != self.case_hash for review in self.automated_reviews):
+            review_issues.append("one or more automated review hashes do not match the case")
+        if any(not review.reviewer_kind.strip() for review in self.automated_reviews):
+            review_issues.append("automated reviews must identify reviewer_kind")
+        judge_hash_matches = (
+            self.judge_assessment is not None
+            and self.judge_assessment.case_hash == self.case_hash
+        )
+        approved = any(review.status == ReviewStatus.APPROVED for review in self.automated_reviews)
+        rejected = any(review.status == ReviewStatus.REJECTED for review in self.automated_reviews)
+        derived = (
+            self.review_mode == "automated_only"
+            and not blocking_checks
+            and not missing_checks
+            and not duplicate_checks
+            and self.judge_assessment is not None
+            and judge_hash_matches
+            and not review_issues
+            and approved
+            and not rejected
+        )
+
+        reasons = [check.message for check in blocking_checks]
+        if self.review_mode != "automated_only":
+            reasons.append("automated validation must use review_mode=automated_only")
+        if missing_checks:
+            reasons.append(f"required validation checks are missing: {missing_checks}")
+        if duplicate_checks:
+            reasons.append(f"validation checks are duplicated: {duplicate_checks}")
+        if self.judge_assessment is None:
+            reasons.append("structured judge assessment is required")
+        elif not judge_hash_matches:
+            reasons.append("judge assessment hash does not match the case")
+        reasons.extend(review_issues)
+        if not approved:
+            reasons.append("automated agent approval is required")
+        if rejected:
+            reasons.append("an automated agent rejected the case")
 
         self.accepted = derived
         self.rejection_reasons = list(dict.fromkeys(reasons))

@@ -17,6 +17,7 @@ from app.evaluation.schemas import (
     JudgeAssessment,
     Language,
     NegativeReason,
+    PrimaryCategory,
     ReviewStatus,
     RuleReference,
     RuleSet,
@@ -334,6 +335,10 @@ class BenchmarkValidator:
             if point.point_id in seen_ids:
                 errors.append(f"duplicate answer point id: {point.point_id}")
             seen_ids.add(point.point_id)
+            if point.evidence_kind == EvidenceKind.SOURCE and point.text.rstrip().endswith("..."):
+                errors.append(
+                    f"{point.point_id}: source-backed answer points cannot end with a truncated excerpt"
+                )
             for chunk_id in point.supporting_chunk_ids:
                 if chunk_id not in source_ids:
                     errors.append(f"{point.point_id}: source {chunk_id} is not declared by the case")
@@ -435,6 +440,70 @@ class BenchmarkValidator:
                 expected_case_type=expected_case_type.value,
                 actual_case_type=case.case_type.value,
             )
+        if case.primary_category == PrimaryCategory.COMPARISON_MULTI_HOP:
+            comparison_points = [
+                point for point in case.answer_points
+                if len(set(point.supporting_chunk_ids)) >= 2
+            ]
+            if len(case.source_chunk_ids) < 2 or not comparison_points:
+                return _check(
+                    "case_type_profile",
+                    CheckStatus.FAIL,
+                    "comparison cases require a scoreable answer point grounded in both sources",
+                )
+        if case.primary_category == PrimaryCategory.MULTI_TURN_FOLLOW_UP:
+            follow_ups = [turn for turn in case.turns if turn.depends_on_turn is not None]
+            previous_sources = {
+                chunk_id
+                for turn in case.turns
+                if turn.turn_index == 1
+                for point in turn.answer_points
+                for chunk_id in point.supporting_chunk_ids
+            }
+            follow_up_points = [
+                point
+                for turn in follow_ups
+                for point in turn.answer_points
+                if len(set(point.supporting_chunk_ids)) >= 2
+                and previous_sources.intersection(point.supporting_chunk_ids)
+            ]
+            dependency_markers = ("previous", "above", "just answered", "刚才", "前一", "上述")
+            has_explicit_reference = any(
+                any(marker in turn.query.casefold() for marker in dependency_markers)
+                for turn in follow_ups
+            )
+            if not follow_ups or not follow_up_points or not has_explicit_reference:
+                return _check(
+                    "case_type_profile",
+                    CheckStatus.FAIL,
+                    "multi-turn follow-up cases must explicitly use and score the earlier-turn context",
+                )
+        if case.primary_category == PrimaryCategory.TOOL_CHAIN:
+            classifier_calls = [
+                call for call in case.expected_tool_calls
+                if call.tool_name == "transaction_classifier"
+            ]
+            applicable_rules = {
+                str(rule).strip().upper()
+                for call in classifier_calls
+                for rule in call.expected_output.get("applicable_rules", [])
+                if str(rule).strip()
+            }
+            referenced_rules = {
+                _normalized_rule_number(reference.rule_number)
+                for reference in self._all_rule_references(case)
+            }
+            normalized_applicable = {
+                _normalized_rule_number(rule) for rule in applicable_rules
+            }
+            if not applicable_rules or not referenced_rules.intersection(normalized_applicable):
+                return _check(
+                    "case_type_profile",
+                    CheckStatus.FAIL,
+                    "tool-chain regulatory evidence must match a classifier applicable rule",
+                    applicable_rules=sorted(applicable_rules),
+                    referenced_rules=sorted(referenced_rules),
+                )
         if case.case_type != CaseType.NEGATIVE:
             return _check(
                 "case_type_profile",

@@ -48,7 +48,10 @@ GENERATOR_PROMPT = (
     "attach unrelated regulatory evidence. For tool-plus-retrieval cases, use only regulatory "
     "sources that directly address the requested transaction classification or disclosure result. "
     "Generate Chinese cases directly from the evidence and mark them cross_lingual "
-    "when the cited evidence is not Chinese-only."
+    "when the cited evidence is not Chinese-only. Comparison cases must include a "
+    "scorable, two-source comparison conclusion rather than two independent summaries. "
+    "Multi-turn follow-up cases must make the second turn explicitly depend on the "
+    "first-turn answer and must score that cross-turn dependency."
 )
 _QUALIFIED_RULE_NUMBER_RE = re.compile(r"^\d+[A-Z]?(?:\.\d+[A-Z]?)$", re.IGNORECASE)
 _CANONICAL_RULE_FILENAMES = {"main_board.pdf", "gem.pdf"}
@@ -114,6 +117,48 @@ def _scenario_label(record: SourceRecord, ordinal: int) -> str:
     return f"{adjectives[digest[0] % len(adjectives)]} {nouns[digest[1] % len(nouns)]} {digest[2]:02x}{digest[3]:02x}"
 
 
+def _scenario_detail(record: SourceRecord, ordinal: int) -> str:
+    """Return non-legal commercial context that keeps synthetic tool cases distinct."""
+    sectors = (
+        "renewable-energy assets", "logistics facilities", "healthcare services", "retail operations",
+        "data-centre capacity", "hospitality properties", "industrial equipment", "education services",
+        "consumer brands", "financial technology", "telecommunications infrastructure", "media rights",
+        "mineral interests", "biotechnology research", "port operations", "construction contracts",
+    )
+    counterparties = (
+        "a regional operator", "an institutional investor", "an unaffiliated vendor", "a strategic buyer",
+        "a joint-venture partner", "a family-owned business", "a public-sector customer", "a private fund",
+        "an overseas distributor", "a licensed service provider", "an independent developer", "a listed counterparty",
+    )
+    objectives = (
+        "expansion", "portfolio rebalancing", "working-capital efficiency", "market entry",
+        "operational consolidation", "technology renewal", "supply-chain resilience", "asset monetisation",
+        "capacity planning", "risk diversification", "geographic diversification", "post-merger integration",
+    )
+    timelines = (
+        "an accelerated quarter-end timetable", "a phased twelve-month timetable",
+        "a staged implementation timetable", "a board-led approval timetable",
+        "a financing-contingent timetable", "a regulatory-filing timetable",
+        "a due-diligence timetable", "a post-completion timetable",
+    )
+    funding = (
+        "existing cash resources", "a revolving credit facility", "vendor financing",
+        "a co-investment arrangement", "an asset-backed facility", "a private placement",
+        "an internal capital allocation", "a staged consideration structure",
+    )
+    risks = (
+        "operational integration review", "customer-retention planning", "supply-chain review",
+        "technology migration planning", "property transition review", "licensing readiness review",
+        "workforce continuity planning", "cross-border execution review",
+    )
+    digest = hashlib.sha256(f"{record.chunk_id}:detail:{ordinal}".encode("utf-8")).digest()
+    return (
+        f"{sectors[digest[0] % len(sectors)]} involving {counterparties[digest[1] % len(counterparties)]} "
+        f"for {objectives[digest[2] % len(objectives)]}, with {timelines[digest[3] % len(timelines)]}, "
+        f"funded through {funding[digest[4] % len(funding)]}, and subject to {risks[digest[5] % len(risks)]}"
+    )
+
+
 def _rule_reference(record: SourceRecord) -> RuleReference:
     if record.ruleset not in {RuleSet.MAIN_BOARD, RuleSet.GEM} or not record.rule_number:
         raise ValueError(f"source {record.chunk_id} has no concrete Main Board/GEM rule identity")
@@ -140,6 +185,28 @@ def _source_point(case_id: str, ordinal: int, record: SourceRecord) -> AnswerPoi
     )
 
 
+def _comparison_point(
+    case_id: str,
+    ordinal: int,
+    left: SourceRecord,
+    right: SourceRecord,
+) -> AnswerPoint:
+    """Create one scoreable claim that requires both source passages to answer."""
+    return AnswerPoint(
+        point_id=f"{case_id}-comparison-{ordinal}",
+        text=(
+            f"Compare {left.ruleset.value.replace('_', ' ')} Rule {left.rule_number} "
+            f"({_short_excerpt(_atomic_source_claim(left.text), 60)}) with "
+            f"{right.ruleset.value.replace('_', ' ')} Rule {right.rule_number} "
+            f"({_short_excerpt(_atomic_source_claim(right.text), 60)}). Explicitly distinguish "
+            "the two evidenced requirements; do not infer an unstated priority."
+        ),
+        evidence_kind=EvidenceKind.SOURCE,
+        supporting_chunk_ids=[left.chunk_id, right.chunk_id],
+        supporting_rules=[_rule_reference(left), _rule_reference(right)],
+    )
+
+
 def _atomic_source_claim(text: str) -> str:
     normalized = " ".join(text.split())
     sentences = [
@@ -147,7 +214,16 @@ def _atomic_source_claim(text: str) -> str:
         for sentence in re.split(r"(?<=[.!?])\s+", normalized)
         if len(sentence.strip()) >= 24
     ]
-    return _short_excerpt(sentences[0] if sentences else normalized, 360)
+    candidate = sentences[0] if sentences else normalized
+    if len(candidate) <= 360:
+        return candidate
+    clauses = [
+        clause.strip()
+        for clause in re.split(r"(?<=[;:])\s+", candidate)
+        if len(clause.strip()) >= 24
+    ]
+    complete_clause = next((clause for clause in clauses if len(clause) <= 360), None)
+    return complete_clause or _short_excerpt(candidate, 360)
 
 
 def _provenance(registry: SourceRegistry, seed: int) -> GenerationProvenance:
@@ -204,6 +280,56 @@ def _pair_query(category: PrimaryCategory, language: Language, left: SourceRecor
     return (
         f"Compare the evidence passages for {left_rule} and {right_rule}; identify the grounded relationship "
         f"between {_anchor(left)} and {_anchor(right)}. Transaction contexts: {left_scenario}; {right_scenario}."
+    )
+
+
+def _comparison_query(
+    language: Language,
+    left: SourceRecord,
+    right: SourceRecord,
+    ordinal: int,
+) -> str:
+    left_rule = f"{left.ruleset.value.replace('_', ' ')} Rule {left.rule_number}"
+    right_rule = f"{right.ruleset.value.replace('_', ' ')} Rule {right.rule_number}"
+    left_scenario = _scenario_label(left, ordinal)
+    right_scenario = _scenario_label(right, ordinal)
+    if language == Language.CHINESE:
+        return (
+            f"\u8bf7\u6bd4\u8f83 {left_rule} \u4e0e {right_rule} \u7684\u8bc1\u636e\u6bb5\u843d\uff1a"
+            f"\u5206\u522b\u8bf4\u660e {_anchor(left)} \u548c {_anchor(right)} \u6240\u5bf9\u5e94\u7684\u53ef\u786e\u8ba4\u8981\u6c42\uff0c"
+            "\u5e76\u660e\u786e\u533a\u5206\u4e24\u8005\uff0c\u4e0d\u8981\u63a8\u65ad\u8bc1\u636e\u672a\u8bf4\u660e\u7684\u4f18\u5148\u7ea7\u6216\u56e0\u679c\u5173\u7cfb\u3002"
+            f" \u4ea4\u6613\u80cc\u666f\uff1a{left_scenario}\uff1b{right_scenario}\u3002"
+        )
+    return (
+        f"Compare the evidence passages for {left_rule} and {right_rule}. State the requirement "
+        f"evidenced by each passage concerning {_anchor(left)} and {_anchor(right)}, then explicitly "
+        "distinguish those requirements without inferring an unstated legal priority or causal relationship. "
+        f"Transaction contexts: {left_scenario}; {right_scenario}."
+    )
+
+
+def _follow_up_queries(
+    language: Language,
+    left: SourceRecord,
+    right: SourceRecord,
+    ordinal: int,
+) -> Tuple[str, str]:
+    left_rule = f"{left.ruleset.value.replace('_', ' ')} Rule {left.rule_number}"
+    right_rule = f"{right.ruleset.value.replace('_', ' ')} Rule {right.rule_number}"
+    if language == Language.CHINESE:
+        return (
+            f"\u5bf9\u4e8e {_scenario_label(left, ordinal)}\uff0c\u8bf7\u6839\u636e {left_rule} "
+            "\u7684\u8bc1\u636e\u8bf4\u660e\u53ef\u786e\u8ba4\u7684\u8981\u6c42\u3002",
+            "\u57fa\u4e8e\u4f60\u521a\u624d\u5bf9\u524d\u4e00\u6761\u8981\u6c42\u7684\u56de\u7b54\uff0c"
+            f"\u8bf7\u5c06\u5176\u4e0e {right_rule} \u5bf9 {_scenario_label(right, ordinal)} "
+            "\u7684\u8981\u6c42\u8fdb\u884c\u6bd4\u8f83\uff0c\u660e\u786e\u8bf4\u660e\u4e24\u8005\u7684\u533a\u522b\uff0c"
+            "\u4e0d\u8981\u63a8\u65ad\u8bc1\u636e\u672a\u8bf4\u660e\u7684\u5173\u7cfb\u3002",
+        )
+    return (
+        f"For the {_scenario_label(left, ordinal)}, what requirement is evidenced by {left_rule}?",
+        "Based on your previous answer, compare that requirement with the requirement "
+        f"evidenced by {right_rule} for the {_scenario_label(right, ordinal)}. Explicitly distinguish "
+        "the two requirements without inferring an unstated legal relationship.",
     )
 
 
@@ -321,6 +447,7 @@ def _tool_case(
             f"classification and disclosure steps for the {_scenario_label(record, ordinal)}."
         )
     query += " " + _format_size_test_inputs(size_inputs)
+    query += f" Deal-specific commercial context: {_scenario_detail(record, ordinal)}."
     query += (
         f" Apply the regulatory consequence evidenced by {record.ruleset.value.replace('_', ' ')} "
         f"Rule {record.rule_number}."
@@ -673,6 +800,43 @@ def _pick_unused_pair(
     raise ValueError(f"connected source-pair pool exhausted while generating {key}")
 
 
+def _pick_ranked_source(
+    values: Sequence[SourceRecord],
+    key: str,
+    ordinal: int,
+) -> SourceRecord:
+    if not values:
+        raise ValueError(f"source pool is empty while generating {key}")
+    ranked = sorted(
+        values,
+        key=lambda item: hashlib.sha256(f"{key}:{item.chunk_id}".encode("utf-8")).hexdigest(),
+    )
+    return ranked[ordinal % len(ranked)]
+
+
+def _tool_source_for_classification(
+    sources: Sequence[SourceRecord],
+    classifier_output: Mapping[str, object],
+    key: str,
+    ordinal: int,
+) -> SourceRecord:
+    applicable_rules = {
+        str(rule).strip().upper()
+        for rule in classifier_output.get("applicable_rules", [])
+        if str(rule).strip()
+    }
+    matching_sources = [
+        record for record in sources
+        if (record.rule_number or "").strip().upper() in applicable_rules
+    ]
+    if not matching_sources:
+        raise ValueError(
+            "no eligible source matches the classifier's applicable rules: "
+            f"{sorted(applicable_rules)}"
+        )
+    return _pick_ranked_source(matching_sources, key, ordinal)
+
+
 def generate_candidates(
     registry: SourceRegistry,
     graph_edges: Iterable[Mapping[str, object]],
@@ -689,7 +853,6 @@ def generate_candidates(
     if not _slug(case_id_prefix):
         raise ValueError("case_id_prefix must contain at least one alphanumeric character")
     sources = _eligible_rule_sources(registry)
-    tool_sources = _notifiable_transaction_sources(registry)
     source_by_id = {record.chunk_id: record for record in sources}
     needs_source_pairs = any(
         cell.primary_category in {
@@ -733,11 +896,18 @@ def generate_candidates(
                 ))
                 continue
             if category == PrimaryCategory.TOOL_CHAIN:
-                source = _pick_unused(
-                    tool_sources,
+                size_inputs = _tool_inputs(ordinal)
+                size_output = SizeTestCalculatorTool().run(size_inputs)
+                classifier_output = TransactionClassifierTool().run({
+                    "highest_ratio": size_output["highest_ratio"],
+                    "transaction_type": size_inputs["transaction_type"],
+                    "is_connected": False,
+                })
+                source = _tool_source_for_classification(
+                    sources,
+                    classifier_output,
                     f"{category.value}:{cell.language.value}",
                     index,
-                    used_sources[(category.value, cell.language.value)],
                 )
                 generated.append(_tool_case(
                     case_id, category, cell.language, cell.difficulty, source, ordinal, registry, seed
@@ -755,7 +925,7 @@ def generate_candidates(
                     generated.append(BenchmarkCase(
                         case_id=case_id,
                         case_type=CaseType.ANSWERABLE,
-                        query=_pair_query(category, cell.language, left, right, ordinal),
+                        query=_comparison_query(cell.language, left, right, ordinal),
                         language=cell.language,
                         primary_category=category,
                         capability_tags=_case_tags(cell.language, "multi_hop", "connected_subgraph"),
@@ -763,7 +933,11 @@ def generate_candidates(
                         as_of=registry.manifest.snapshot_date,
                         expected_intent=ExpectedIntent.COMPARISON,
                         expected_route=RouteMode.RETRIEVAL,
-                        answer_points=[_source_point(case_id, 1, left), _source_point(case_id, 2, right)],
+                        answer_points=[
+                            _source_point(case_id, 1, left),
+                            _source_point(case_id, 2, right),
+                            _comparison_point(case_id, 3, left, right),
+                        ],
                         expected_rules=[_rule_reference(left), _rule_reference(right)],
                         source_chunk_ids=[left.chunk_id, right.chunk_id],
                         provenance=_provenance(registry, seed),
@@ -775,6 +949,9 @@ def generate_candidates(
                     else:
                         first_query = f"For the {_scenario_label(left, ordinal)}, what requirement is evidenced by {left.ruleset.value.replace('_', ' ')} Rule {left.rule_number}?"
                         second_query = f"For the related {_scenario_label(right, ordinal)}, what additional requirement is evidenced by {right.ruleset.value.replace('_', ' ')} Rule {right.rule_number}?"
+                    first_query, second_query = _follow_up_queries(
+                        cell.language, left, right, ordinal
+                    )
                     generated.append(BenchmarkCase(
                         case_id=case_id,
                         case_type=CaseType.MULTI_TURN,
@@ -796,7 +973,7 @@ def generate_candidates(
                                 query=second_query,
                                 expected_intent=ExpectedIntent.RULE_LOOKUP,
                                 expected_route=RouteMode.RETRIEVAL,
-                                answer_points=[_source_point(case_id, 2, right)],
+                                answer_points=[_comparison_point(case_id, 2, left, right)],
                                 depends_on_turn=1,
                             ),
                         ],
