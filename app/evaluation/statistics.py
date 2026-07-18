@@ -181,6 +181,68 @@ def paired_bootstrap_difference(
     )
 
 
+def paired_clustered_pooled_bootstrap_difference(
+    baseline_point_outcomes: Mapping[str, Sequence[bool]],
+    agentic_point_outcomes: Mapping[str, Sequence[bool]],
+    confidence_level: float = 0.95,
+    bootstrap_samples: int = 10000,
+    seed: int = 42,
+) -> PairedDifferenceSummary:
+    """Bootstrap a pooled point metric while preserving case-level clustering.
+
+    Each draw resamples whole cases. Point outcomes inside each selected case stay
+    together, and the score is recomputed as passed points / scorable points.
+    """
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError("confidence_level must be between 0 and 1")
+    if bootstrap_samples < 100:
+        raise ValueError("bootstrap_samples must be at least 100")
+    if set(baseline_point_outcomes) != set(agentic_point_outcomes):
+        raise ValueError("paired point outcomes require identical case IDs")
+    if not baseline_point_outcomes:
+        raise ValueError("paired point outcomes cannot be empty")
+
+    case_ids = sorted(baseline_point_outcomes)
+    for case_id in case_ids:
+        if len(baseline_point_outcomes[case_id]) != len(agentic_point_outcomes[case_id]):
+            raise ValueError(f"paired point outcomes require equal point counts for {case_id}")
+    if not any(baseline_point_outcomes[case_id] for case_id in case_ids):
+        raise ValueError("paired point outcomes require at least one scorable point")
+
+    def pooled_difference(sampled_case_ids: Sequence[str]) -> float:
+        baseline_total = sum(len(baseline_point_outcomes[case_id]) for case_id in sampled_case_ids)
+        agentic_total = sum(len(agentic_point_outcomes[case_id]) for case_id in sampled_case_ids)
+        if baseline_total != agentic_total or baseline_total == 0:
+            raise ValueError("paired sampled cases must contain matching scorable point totals")
+        baseline_passed = sum(
+            sum(bool(point) for point in baseline_point_outcomes[case_id])
+            for case_id in sampled_case_ids
+        )
+        agentic_passed = sum(
+            sum(bool(point) for point in agentic_point_outcomes[case_id])
+            for case_id in sampled_case_ids
+        )
+        return (agentic_passed - baseline_passed) / baseline_total
+
+    mean_difference = pooled_difference(case_ids)
+    rng = random.Random(seed)
+    bootstrap_differences = []
+    for _ in range(bootstrap_samples):
+        sample = [case_ids[rng.randrange(len(case_ids))] for _ in case_ids]
+        bootstrap_differences.append(pooled_difference(sample))
+    bootstrap_differences.sort()
+    alpha = 1.0 - confidence_level
+    return PairedDifferenceSummary(
+        case_count=len(case_ids),
+        mean_difference=mean_difference,
+        ci_low=_quantile(bootstrap_differences, alpha / 2),
+        ci_high=_quantile(bootstrap_differences, 1 - alpha / 2),
+        confidence_level=confidence_level,
+        bootstrap_samples=bootstrap_samples,
+        seed=seed,
+    )
+
+
 def mcnemar_exact(
     baseline_outcomes: Mapping[str, bool],
     agentic_outcomes: Mapping[str, bool],

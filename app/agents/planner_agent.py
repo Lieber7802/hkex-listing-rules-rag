@@ -7,6 +7,33 @@ from app.core.logger import logger
 
 
 class PlannerAgent:
+    _CHECKLIST_REQUIRED_FIELDS = {
+        "classification",
+        "is_connected",
+        "shareholder_vote_required",
+    }
+    _CHECKLIST_CLASSIFICATIONS = (
+        ("very_substantial", (
+            r"\bvery substantial (?:acquisition|disposal|transaction)\b",
+            r"\u975e\u5e38\u91cd\u5927(?:\u7684)?(?:\u6536\u8d2d|\u51fa\u552e|\u4ea4\u6613)",
+        )),
+        ("major_transaction", (
+            r"\bmajor transaction\b",
+            r"\u4e3b\u8981\u4ea4\u6613",
+        )),
+        ("discloseable_transaction", (
+            r"\bdiscloseable transaction\b",
+            r"(?:\u987b\u4e88|\u9808\u4e88)\u62ab\u9732(?:\u7684)?\u4ea4\u6613",
+        )),
+        ("share_transaction", (
+            r"\bshare transaction\b",
+            r"\u80a1\u4efd\u4ea4\u6613",
+        )),
+        ("de_minimis", (
+            r"\bde minimis(?: transaction)?\b",
+            r"(?:\u5fae\u5c0f|\u6700\u4f4e\u9650\u5ea6)\u4ea4\u6613",
+        )),
+    )
     _REGULATORY_GROUNDS_TERMS = (
         "disclosure", "announce", "announcement", "approval", "obligation",
         "requirement", "applicable rule", "applicable rules", "consequence",
@@ -67,6 +94,10 @@ class PlannerAgent:
                 r'disclosure (?:obligation|requirement)', r'what (?:are|is) (?:the )?(?:disclosure|reporting)',
                 r'\bsummarize\b.*\b(?:obligation|compliance|disclosure)',
                 r'\b(?:obligation|compliance)\b.*\b(?:summary|summarize|requirement)',
+                r'\bwhat follows?\b.*\b(?:under|pursuant to|according to)\b.*\bchapter\s*14[a-z]?\b',
+                r'\b(?:consequences?|next steps?|what happens?)\b.*\b(?:under|pursuant to|according to)\b.*\bchapter\s*14[a-z]?\b',
+                r'(?:\u7b2c?\s*14[a-z]?\s*\u7ae0?|\u7b2c?\s*14[a-z]?\s*\u7ae0?\u89c4\u5219).*(?:\u540e\u679c|\u540e\u7eed|\u63a5\u4e0b\u6765|\u9700\u8981(?:\u505a|\u5c65\u884c|\u91c7\u53d6)|\u600e\u4e48\u529e|\u5982\u4f55\u5904\u7406)',
+                r'(?:\u6839\u636e|\u4f9d\u7167|\u6309|\u6309\u7167).*(?:\u7b2c?\s*14[a-z]?\s*\u7ae0?).*(?:\u540e\u679c|\u540e\u7eed|\u63a5\u4e0b\u6765|\u9700\u8981(?:\u505a|\u5c65\u884c|\u91c7\u53d6)|\u600e\u4e48\u529e|\u5982\u4f55\u5904\u7406)',
                 "\u6982\u62ec.*(?:\u62ab\u9732|\u5408\u89c4|\u4e49\u52a1|\u8981\u6c42)",
                 "(?:\u62ab\u9732|\u5408\u89c4)\u4e49\u52a1",
                 # Chinese
@@ -138,6 +169,15 @@ class PlannerAgent:
         answer_format = self._determine_answer_format(intent, query_type)
 
         tool_mode = self._select_tool_mode(intent, query_lower)
+        if intent == "obligation_summary" and not requires_tool:
+            # Generic consequence questions need source retrieval, but the
+            # checklist tool cannot safely infer its required legal facts.
+            tool_name = None
+            tool_mode = "none"
+            reason = (
+                f"{reason}; obligation summary routed retrieval-only because "
+                "the checklist inputs are not all explicit"
+            )
 
         output = PlannerOutput(
             query_type=query_type,
@@ -280,6 +320,8 @@ class PlannerAgent:
             return True
         if intent == "eligibility_check":
             return True
+        if intent == "obligation_summary":
+            return self._has_complete_checklist_inputs(query_lower)
         return bool(re.search(
             r'\b(?:size test|ratios?|calculate|percentages?)\b', query_lower,
             flags=re.IGNORECASE,
@@ -297,6 +339,14 @@ class PlannerAgent:
 
     def _select_tool_mode(self, intent: str, query_lower: str = "") -> str:
         """Map intent to tool execution mode."""
+        if intent == "obligation_summary":
+            if not self._has_complete_checklist_inputs(query_lower):
+                return "none"
+            return (
+                "tool_plus_retrieval"
+                if self.tool_evidence_policy == "regulatory_grounded"
+                else "tool_only"
+            )
         if self.tool_evidence_policy == "regulatory_grounded":
             if intent == "calculation_required":
                 return (
@@ -304,15 +354,65 @@ class PlannerAgent:
                     if self._requires_regulatory_grounding(query_lower)
                     else "tool_only"
                 )
-            if intent == "obligation_summary":
-                return "tool_plus_retrieval"
         mode_map = {
             "calculation_required": "tool_only",
             "rule_lookup": "tool_plus_retrieval",
             "eligibility_check": "tool_plus_retrieval",
-            "obligation_summary": "tool_only",
         }
         return mode_map.get(intent, "none")
+
+    def _has_complete_checklist_inputs(self, query_lower: str) -> bool:
+        """Return whether the query explicitly supplies every checklist input.
+
+        The checklist requires a classification, connected-transaction status,
+        and shareholder-vote requirement.  This method intentionally does not
+        invent legal defaults: without all three facts, retrieval is safer.
+        """
+        return self._CHECKLIST_REQUIRED_FIELDS.issubset(
+            self._extract_explicit_checklist_inputs(query_lower)
+        )
+
+    def _extract_explicit_checklist_inputs(self, query_lower: str) -> Dict[str, Any]:
+        inputs: Dict[str, Any] = {}
+        for classification, patterns in self._CHECKLIST_CLASSIFICATIONS:
+            if self._matches_any(list(patterns), query_lower):
+                inputs["classification"] = classification
+                break
+
+        if re.search(
+            r"\b(?:not|non)[ -]?(?:a )?connected(?: transaction)?\b|"
+            r"\bnot related(?: party)?\b|(?:\u975e|\u4e0d(?:\u662f|\u5c5e\u4e8e)?|\u5e76\u975e)(?:\u5173\u8054|\u95dc\u806f)",
+            query_lower,
+            flags=re.IGNORECASE,
+        ):
+            inputs["is_connected"] = False
+        elif re.search(
+            r"\b(?:connected transaction|connected party|related party|associate)\b|"
+            r"(?:\u5173\u8054|\u95dc\u806f)(?:\u4ea4\u6613|\u4eba\u58eb|\u65b9)",
+            query_lower,
+            flags=re.IGNORECASE,
+        ):
+            inputs["is_connected"] = True
+
+        if re.search(
+            r"\b(?:no|not|without)\s+(?:shareholder(?:s')?\s+)?(?:vote|approval)\s+(?:is\s+)?required\b|"
+            r"\bshareholder(?:s')?\s+(?:vote|approval)\s+(?:is\s+)?not\s+required\b|"
+            r"(?:\u65e0\u9700|\u7121\u9700|\u4e0d\u9700\u8981)(?:\u80a1\u4e1c|\u80a1\u6771)(?:\u6279\u51c6|\u5be9\u6279|\u5ba1\u6279|\u6295\u7968)",
+            query_lower,
+            flags=re.IGNORECASE,
+        ):
+            inputs["shareholder_vote_required"] = False
+        elif re.search(
+            r"\b(?:shareholder(?:s')?\s+)?(?:vote|approval)\s+(?:is\s+)?required\b|"
+            r"\brequires?\s+(?:shareholder(?:s')?\s+)?(?:vote|approval)\b|"
+            r"(?:\u9700\u8981|\u987b|\u9808)(?:\u80a1\u4e1c|\u80a1\u6771)(?:\u6279\u51c6|\u5be9\u6279|\u5ba1\u6279|\u6295\u7968)|"
+            r"(?:\u80a1\u4e1c|\u80a1\u6771)(?:\u6279\u51c6|\u5be9\u6279|\u5ba1\u6279|\u6295\u7968)(?:\u8981\u6c42|\u5fc5\u987b|\u5fc5\u9808|\u9700\u8981)",
+            query_lower,
+            flags=re.IGNORECASE,
+        ):
+            inputs["shareholder_vote_required"] = True
+
+        return inputs
 
     def _requires_regulatory_grounding(self, query_lower: str) -> bool:
         return any(term in query_lower for term in self._REGULATORY_GROUNDS_TERMS)

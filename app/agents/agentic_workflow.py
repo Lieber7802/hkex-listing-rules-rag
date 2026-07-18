@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Sequence
 from pathlib import Path
 import uuid
+import math
+import re
 
 from langgraph.graph import StateGraph, END
 
@@ -27,6 +29,7 @@ from app.core.logger import logger
 
 
 MAX_RETRIEVAL_ROUNDS = 2
+MAX_RETRIEVED_CHUNKS_PER_ROUND = 10
 
 
 class GraphNodes:
@@ -196,8 +199,15 @@ def retriever_node(nodes: GraphNodes):
             )
             targeted_queries = QueryRewriter().rewrite(query, retrieval_targets)
             queries_used = targeted_queries
-            for targeted_query in targeted_queries:
-                results.extend(nodes.retriever.retrieve(targeted_query))
+            targeted_results = [
+                nodes.retriever.retrieve(targeted_query)
+                for targeted_query in targeted_queries
+            ]
+            unique_results = _round_robin_targeted_results(
+                targeted_results,
+                existing_ids,
+                limit=MAX_RETRIEVED_CHUNKS_PER_ROUND,
+            )
         else:
             if sub_queries and route_decision and route_decision.query_type == "multi_hop":
                 queries_used = list(sub_queries)
@@ -207,15 +217,7 @@ def retriever_node(nodes: GraphNodes):
                 queries_used = [query]
                 results = nodes.retriever.retrieve(query)
 
-        unique_results = []
-        seen_ids = set()
-        for result in results:
-            if result.chunk_id in seen_ids:
-                continue
-            if retrieval_round > 1 and result.chunk_id in existing_ids:
-                continue
-            seen_ids.add(result.chunk_id)
-            unique_results.append(result)
+            unique_results = _unique_results(results)
 
         chunks_data = [
             {
@@ -230,7 +232,7 @@ def retriever_node(nodes: GraphNodes):
                 "bm25_score": getattr(r, "bm25_score", r.score),
                 "dense_score": getattr(r, "dense_score", r.score),
             }
-            for r in unique_results[:10]
+            for r in unique_results[:MAX_RETRIEVED_CHUNKS_PER_ROUND]
         ]
 
         logger.info(f"Retriever node: retrieved {len(chunks_data)} chunks")
@@ -253,6 +255,56 @@ def retriever_node(nodes: GraphNodes):
         return result
 
     return node
+
+
+def _unique_results(results: Sequence[RetrievalResult]) -> list[RetrievalResult]:
+    """Keep ranked retrieval results unique while preserving their first occurrence."""
+    unique_results: list[RetrievalResult] = []
+    seen_ids: set[str] = set()
+    for result in results:
+        if result.chunk_id in seen_ids:
+            continue
+        seen_ids.add(result.chunk_id)
+        unique_results.append(result)
+    return unique_results
+
+
+def _round_robin_targeted_results(
+    targeted_results: Sequence[Sequence[RetrievalResult]],
+    existing_ids: set[str],
+    *,
+    limit: int,
+) -> list[RetrievalResult]:
+    """Reserve a ranked unseen result for each targeted query before filling the cap.
+
+    A second retrieval may contain several coverage gaps. Concatenating each query's
+    top-k results lets the first gap consume the whole ten-chunk budget. Round-robin
+    selection keeps one representative for every gap that has unseen evidence, then
+    continues by rank until the per-round cap is reached.
+    """
+    per_target = [_unique_results(results) for results in targeted_results]
+    positions = [0] * len(per_target)
+    seen_ids = set(existing_ids)
+    selected: list[RetrievalResult] = []
+
+    while len(selected) < limit:
+        selected_this_pass = False
+        for index, candidates in enumerate(per_target):
+            while positions[index] < len(candidates):
+                candidate = candidates[positions[index]]
+                positions[index] += 1
+                if candidate.chunk_id in seen_ids:
+                    continue
+                seen_ids.add(candidate.chunk_id)
+                selected.append(candidate)
+                selected_this_pass = True
+                break
+            if len(selected) >= limit:
+                break
+        if not selected_this_pass:
+            break
+
+    return selected
 
 
 def coverage_checker_node(nodes: GraphNodes):
@@ -358,24 +410,246 @@ def answer_verifier_node(nodes: GraphNodes):
         if not results and tool_results:
             successful_tools = [r for r in tool_results if r.get("success")]
             if successful_tools:
+                verification = _verify_tool_only_answer(answer, successful_tools)
                 return {
-                    "verification_result": {
-                        "is_supported": True,
-                        "unsupported_claims": [],
-                        "contradictions": [],
-                        "confidence_level": "high",
-                        "summary": f"Answer is supported by tool execution ({len(successful_tools)} tool(s) executed successfully).",
-                    },
-                    "confidence_level": "high",
+                    "verification_result": verification,
+                    "confidence_level": verification["confidence_level"],
                 }
 
         verification = nodes.answer_verifier.verify(answer, results)
+        verification_data = verification.model_dump()
+        successful_tools = [r for r in tool_results if r.get("success")]
+        if successful_tools:
+            _merge_tool_output_verification(
+                verification_data,
+                _verify_tool_only_answer(answer, successful_tools),
+            )
         return {
-            "verification_result": verification.model_dump(),
-            "confidence_level": verification.confidence_level,
+            "verification_result": verification_data,
+            "confidence_level": verification_data["confidence_level"],
         }
 
     return node
+
+
+_TOOL_FIELD_LABELS: Dict[str, tuple[str, ...]] = {
+    "highest_ratio": ("highest ratio",),
+    "suggested_classification": ("suggested classification", "classification"),
+    "classification": ("transaction classification", "classification"),
+    "display_name": ("transaction classification",),
+    "shareholder_vote_required": ("shareholder vote", "shareholder approval"),
+    "ifa_required": ("ifa", "independent financial adviser"),
+    "circular_required": ("circular required", "circular requirement"),
+    "announcement_deadline_days": ("announcement deadline",),
+}
+_CLASSIFICATION_TERMS = (
+    "de minimis",
+    "share transaction",
+    "discloseable transaction",
+    "major transaction",
+    "very substantial",
+)
+
+
+def _verify_tool_only_answer(
+    answer: str,
+    successful_tools: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Verify that a tool-only answer does not contradict structured tool output.
+
+    Tool execution proves that a calculation or classification completed; it does
+    not prove that the generated prose repeated the result faithfully. This check
+    deliberately looks only for explicit, labelled conflicts, so a concise answer
+    that omits a tool field remains valid while a conflicting field is rejected.
+    """
+    contradictions: list[Dict[str, str]] = []
+    for tool_result in successful_tools:
+        output = tool_result.get("output")
+        if not isinstance(output, dict):
+            continue
+        tool_name = str(tool_result.get("tool_name") or "unknown_tool")
+        contradictions.extend(
+            _tool_output_contradictions(answer, output, tool_name)
+        )
+
+    is_supported = not contradictions
+    if is_supported:
+        summary = (
+            "Answer is consistent with tool execution "
+            f"({len(successful_tools)} tool(s) executed successfully)."
+        )
+    else:
+        summary = "Answer contradicts one or more successful tool outputs."
+
+    return {
+        "is_supported": is_supported,
+        "unsupported_claims": [item["description"] for item in contradictions],
+        "contradictions": contradictions,
+        "confidence_level": "high" if is_supported else "low",
+        "revision_needed": not is_supported,
+        "summary": summary,
+    }
+
+
+def _merge_tool_output_verification(
+    verification: Dict[str, Any],
+    tool_verification: Dict[str, Any],
+) -> None:
+    """Make successful tool output an additional verifier for mixed tool/RAG paths."""
+    if tool_verification["is_supported"]:
+        return
+
+    verification["unsupported_claims"] = list(dict.fromkeys([
+        *verification.get("unsupported_claims", []),
+        *tool_verification["unsupported_claims"],
+    ]))
+    verification["contradictions"] = [
+        *verification.get("contradictions", []),
+        *tool_verification["contradictions"],
+    ]
+    verification["confidence_level"] = "low"
+    verification["revision_needed"] = True
+    verification["is_supported"] = False
+
+
+def _tool_output_contradictions(
+    answer: str,
+    output: Dict[str, Any],
+    tool_name: str,
+) -> list[Dict[str, str]]:
+    contradictions: list[Dict[str, str]] = []
+    answer_lower = answer.lower()
+
+    for field, expected in _tool_scalar_facts(output):
+        labels = _tool_labels_for_field(field)
+        if not labels:
+            continue
+
+        actual_number = _labelled_number(answer_lower, labels)
+        if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+            if actual_number is not None and not math.isclose(
+                actual_number,
+                float(expected),
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                contradictions.append(_tool_contradiction(
+                    tool_name,
+                    field,
+                    expected,
+                    actual_number,
+                ))
+            continue
+
+        if isinstance(expected, bool):
+            actual_boolean = _labelled_boolean(answer_lower, labels)
+            if actual_boolean is not None and actual_boolean != expected:
+                contradictions.append(_tool_contradiction(
+                    tool_name,
+                    field,
+                    expected,
+                    actual_boolean,
+                ))
+            continue
+
+        if field in {"classification", "suggested_classification", "display_name"}:
+            expected_classification = _canonical_classification(str(expected))
+            mentioned_classifications = {
+                term for term in _CLASSIFICATION_TERMS
+                if term in answer_lower
+            }
+            if (
+                expected_classification
+                and mentioned_classifications
+                and expected_classification not in mentioned_classifications
+            ):
+                contradictions.append(_tool_contradiction(
+                    tool_name,
+                    field,
+                    expected_classification,
+                    sorted(mentioned_classifications),
+                ))
+
+    return contradictions
+
+
+def _tool_scalar_facts(output: Dict[str, Any]) -> list[tuple[str, Any]]:
+    """Expose the scalar conclusion fields that a tool-only answer can state."""
+    facts: list[tuple[str, Any]] = []
+    for field, value in output.items():
+        if field == "ratios" and isinstance(value, dict):
+            facts.extend((ratio_name, ratio_value) for ratio_name, ratio_value in value.items()
+                         if isinstance(ratio_value, (str, int, float, bool)))
+        elif isinstance(value, (str, int, float, bool)):
+            facts.append((field, value))
+    return facts
+
+
+def _tool_labels_for_field(field: str) -> tuple[str, ...]:
+    if field in _TOOL_FIELD_LABELS:
+        return _TOOL_FIELD_LABELS[field]
+    if field.endswith("_ratio"):
+        return (field.replace("_", " "),)
+    return ()
+
+
+def _labelled_number(answer: str, labels: Sequence[str]) -> Optional[float]:
+    for label in labels:
+        label_pattern = re.escape(label).replace(r"\ ", r"\s+")
+        pattern = (
+            rf"\b{label_pattern}\b"
+            r"(?:\s*(?:is|was|equals?|of))?\s*[:=\-]?\s*"
+            r"(\d+(?:\.\d+)?)"
+        )
+        match = re.search(pattern, answer, flags=re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+    return None
+
+
+def _labelled_boolean(answer: str, labels: Sequence[str]) -> Optional[bool]:
+    for label in labels:
+        label_pattern = re.escape(label).replace(r"\ ", r"\s+")
+        match = re.search(
+            rf"\b{label_pattern}\b(?P<tail>.{{0,48}})",
+            answer,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        tail = match.group("tail").lower()
+        if re.search(r"\b(no|false|not required|not needed|not necessary)\b", tail):
+            return False
+        if re.search(r"\b(yes|true|required|must)\b", tail):
+            return True
+    return None
+
+
+def _canonical_classification(value: str) -> Optional[str]:
+    normalized = re.sub(r"[_\-]+", " ", value.lower())
+    for term in _CLASSIFICATION_TERMS:
+        if term in normalized:
+            return term
+    return None
+
+
+def _tool_contradiction(
+    tool_name: str,
+    field: str,
+    expected: Any,
+    actual: Any,
+) -> Dict[str, str]:
+    description = (
+        f"Tool {tool_name} returned {field}={expected!r}, "
+        f"but the answer states {actual!r}."
+    )
+    return {
+        "claim": field,
+        "chunk_a_id": f"tool:{tool_name}",
+        "chunk_b_id": "answer",
+        "description": description,
+        "contradiction_type": "tool_output",
+    }
 
 
 def _reconstruct_results(chunks_data, index_store):

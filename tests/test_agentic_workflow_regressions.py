@@ -1,6 +1,11 @@
 import numpy as np
 
-from app.agents.agentic_workflow import AgenticRAGOrchestrator
+from app.agents.agentic_workflow import (
+    AgenticRAGOrchestrator,
+    GraphNodes,
+    answer_verifier_node,
+    retriever_node,
+)
 from app.agents.streaming_workflow import StreamingOrchestrator
 from app.retrieval.hybrid_retriever import RetrievalResult
 from app.retrieval.index_store import IndexStore
@@ -49,6 +54,19 @@ class StaticRetriever:
 
     def retrieve_for_sub_queries(self, queries: list[str]) -> list[RetrievalResult]:
         return self.results
+
+
+class PerQueryRetriever:
+    def __init__(self, results_by_query: dict[str, list[RetrievalResult]]):
+        self.results_by_query = results_by_query
+        self.calls: list[str] = []
+
+    def retrieve(self, query: str) -> list[RetrievalResult]:
+        self.calls.append(query)
+        return self.results_by_query[query]
+
+    def retrieve_for_sub_queries(self, queries: list[str]) -> list[RetrievalResult]:
+        raise AssertionError("second retrieval should query each coverage gap directly")
 
 
 class CoverageGapRetriever:
@@ -297,3 +315,196 @@ def test_second_retrieval_targets_only_the_coverage_gap():
             "coverage_after": 1.0,
         },
     ]
+
+
+def test_second_retrieval_round_robins_unseen_evidence_across_multiple_gaps():
+    existing = Chunk(
+        chunk_id="existing",
+        document_id="d0",
+        source_path="existing.md",
+        text="Previously retrieved evidence.",
+    )
+    target_chunks = [
+        Chunk(
+            chunk_id=f"{gap}-{rank}",
+            document_id=f"d-{gap}",
+            source_path=f"{gap}.md",
+            text=f"Evidence {rank} for {gap}.",
+        )
+        for gap in ("gap-a", "gap-b", "gap-c")
+        for rank in range(1, 7)
+    ]
+    store = _build_index([existing, *target_chunks])
+
+    def result(chunk: Chunk, score: float) -> RetrievalResult:
+        return RetrievalResult(
+            chunk_id=chunk.chunk_id,
+            chunk=chunk,
+            score=score,
+            bm25_score=score,
+            dense_score=score,
+        )
+
+    results_by_query = {
+        gap: [result(existing, 1.0), *[
+            result(chunk, 1.0 - rank / 20)
+            for rank, chunk in enumerate(
+                [item for item in target_chunks if item.chunk_id.startswith(gap)],
+                start=1,
+            )
+        ]]
+        for gap in ("gap-a", "gap-b", "gap-c")
+    }
+    retriever = PerQueryRetriever(results_by_query)
+    nodes = GraphNodes(index_store=store, retriever=retriever, use_llm_planner=False)
+    state = {
+        "query": "original question",
+        "iteration_count": 1,
+        "retrieved_chunks": [{
+            "chunk_id": "existing",
+            "document_id": "d0",
+            "source_path": "existing.md",
+            "text": existing.text,
+            "score": 1.0,
+        }],
+        "coverage_assessment": {
+            "coverage_score": 0.25,
+            "retrieval_targets": ["gap-a", "gap-b", "gap-c"],
+        },
+    }
+
+    result_state = retriever_node(nodes)(state)
+    returned_ids = [chunk["chunk_id"] for chunk in result_state["retrieved_chunks"]]
+
+    assert retriever.calls == ["gap-a", "gap-b", "gap-c"]
+    assert len(returned_ids) == 10
+    assert returned_ids[:3] == ["gap-a-1", "gap-b-1", "gap-c-1"]
+    assert "existing" not in returned_ids
+    assert {"gap-a-1", "gap-b-1", "gap-c-1"}.issubset(returned_ids)
+
+
+def test_tool_only_verification_rejects_an_answer_that_contradicts_tool_output():
+    store = _build_index([
+        Chunk(
+            chunk_id="unused",
+            document_id="d1",
+            source_path="rules.md",
+            text="Unused for this tool-only verification.",
+        )
+    ])
+    nodes = GraphNodes(
+        index_store=store,
+        retriever=StaticRetriever([]),
+        use_llm_planner=False,
+    )
+    state = {
+        "answer": (
+            "The highest ratio is 75%, and the suggested classification is "
+            "Major Transaction."
+        ),
+        "retrieved_chunks": [],
+        "selected_evidence": {"selected_chunks": []},
+        "tool_results": [{
+            "tool_name": "size_test_calculator",
+            "success": True,
+            "output": {
+                "highest_ratio": 18.0,
+                "suggested_classification": "share_transaction",
+            },
+        }],
+    }
+
+    result = answer_verifier_node(nodes)(state)
+
+    assert result["verification_result"]["is_supported"] is False
+    assert result["verification_result"]["revision_needed"] is True
+    assert result["verification_result"]["contradictions"]
+    assert result["confidence_level"] == "low"
+
+
+def test_tool_only_verification_accepts_an_answer_consistent_with_tool_output():
+    store = _build_index([
+        Chunk(
+            chunk_id="unused",
+            document_id="d1",
+            source_path="rules.md",
+            text="Unused for this tool-only verification.",
+        )
+    ])
+    nodes = GraphNodes(
+        index_store=store,
+        retriever=StaticRetriever([]),
+        use_llm_planner=False,
+    )
+    state = {
+        "answer": (
+            "The highest ratio is 18%, and the suggested classification is "
+            "Share Transaction."
+        ),
+        "retrieved_chunks": [],
+        "selected_evidence": {"selected_chunks": []},
+        "tool_results": [{
+            "tool_name": "size_test_calculator",
+            "success": True,
+            "output": {
+                "highest_ratio": 18.0,
+                "suggested_classification": "share_transaction",
+            },
+        }],
+    }
+
+    result = answer_verifier_node(nodes)(state)
+
+    assert result["verification_result"]["is_supported"] is True
+    assert result["verification_result"]["contradictions"] == []
+    assert result["confidence_level"] == "high"
+
+
+def test_mixed_tool_and_retrieval_verification_rejects_tool_contradiction():
+    evidence = Chunk(
+        chunk_id="retrieved",
+        document_id="d1",
+        source_path="rules.md",
+        text=(
+            "The highest ratio is 75%, and the suggested classification is "
+            "Major Transaction."
+        ),
+    )
+    store = _build_index([evidence])
+    nodes = GraphNodes(
+        index_store=store,
+        retriever=StaticRetriever([]),
+        use_llm_planner=False,
+    )
+    state = {
+        "answer": evidence.text,
+        "retrieved_chunks": [{
+            "chunk_id": evidence.chunk_id,
+            "document_id": evidence.document_id,
+            "source_path": evidence.source_path,
+            "text": evidence.text,
+            "score": 1.0,
+        }],
+        "selected_evidence": {"selected_chunks": [{
+            "chunk_id": evidence.chunk_id,
+            "document_id": evidence.document_id,
+            "source_path": evidence.source_path,
+            "text": evidence.text,
+            "score": 1.0,
+        }]},
+        "tool_results": [{
+            "tool_name": "size_test_calculator",
+            "success": True,
+            "output": {
+                "highest_ratio": 18.0,
+                "suggested_classification": "share_transaction",
+            },
+        }],
+    }
+
+    result = answer_verifier_node(nodes)(state)
+
+    assert result["verification_result"]["is_supported"] is False
+    assert result["verification_result"]["revision_needed"] is True
+    assert result["verification_result"]["contradictions"]
+    assert result["confidence_level"] == "low"

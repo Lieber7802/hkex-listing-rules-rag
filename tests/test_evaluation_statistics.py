@@ -5,6 +5,7 @@ from app.evaluation.statistics import (
     human_review_agreement,
     mcnemar_exact,
     paired_bootstrap_difference,
+    paired_clustered_pooled_bootstrap_difference,
 )
 
 
@@ -37,6 +38,28 @@ def test_paired_bootstrap_rejects_unpaired_case_ids():
             {"b": 1.0},
             bootstrap_samples=100,
         )
+
+
+def test_clustered_pooled_bootstrap_uses_point_totals_while_resampling_whole_cases():
+    baseline = {
+        "one-point": [True],
+        "four-point": [False, False, False, False],
+    }
+    agentic = {
+        "one-point": [False],
+        "four-point": [True, True, True, True],
+    }
+
+    result = paired_clustered_pooled_bootstrap_difference(
+        baseline,
+        agentic,
+        bootstrap_samples=500,
+        seed=7,
+    )
+
+    assert result.case_count == 2
+    assert result.mean_difference == pytest.approx(0.6)
+    assert result.ci_low <= result.mean_difference <= result.ci_high
 
 
 def test_mcnemar_exact_counts_discordant_pairs():

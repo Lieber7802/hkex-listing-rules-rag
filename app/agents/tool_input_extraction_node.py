@@ -138,10 +138,40 @@ def _heuristic_extract(query: str, tool_name: str) -> Dict[str, Any]:
         tier = QueryParser.extract_classification_tier(query)
         if tier:
             inputs["classification"] = tier
-        is_connected = any(w in query.lower() for w in ["connected", "related party"])
-        inputs["is_connected"] = is_connected
-        vote_required = any(w in query.lower() for w in ["shareholder vote", "shareholder approval", "shareholders' approval"])
-        inputs["shareholder_vote_required"] = vote_required
+        lowered = query.lower()
+        if re.search(
+            r"\b(?:not|non)[ -]?(?:a )?connected(?: transaction)?\b|"
+            r"\bnot related(?: party)?\b|(?:非|不(?:是|属于)?|并非)(?:关联|關聯)",
+            lowered,
+            flags=re.IGNORECASE,
+        ):
+            inputs["is_connected"] = False
+        elif re.search(
+            r"\b(?:connected transaction|connected party|related party|associate)\b|"
+            r"(?:关联|關聯)(?:交易|人士|方)",
+            lowered,
+            flags=re.IGNORECASE,
+        ):
+            inputs["is_connected"] = True
+
+        if re.search(
+            r"\b(?:no|not|without)\s+(?:shareholder(?:s')?\s+)?(?:vote|approval)\s+(?:is\s+)?required\b|"
+            r"\bshareholder(?:s')?\s+(?:vote|approval)\s+(?:is\s+)?not\s+required\b|"
+            r"(?:无需|無需|不需要)(?:股东|股東)(?:批准|審批|审批|投票)",
+            lowered,
+            flags=re.IGNORECASE,
+        ):
+            inputs["shareholder_vote_required"] = False
+        elif re.search(
+            r"\b(?:shareholder(?:s')?\s+)?(?:vote|approval)\s+(?:is\s+)?required\b|"
+            r"\brequires?\s+(?:shareholder(?:s')?\s+)?(?:vote|approval)\b|"
+            r"\bwith\s+(?:shareholder(?:s')?\s+)?(?:vote|approval)\b|"
+            r"(?:需要|须|須)(?:股东|股東)(?:批准|審批|审批|投票)|"
+            r"(?:股东|股東)(?:批准|審批|审批|投票)(?:要求|必须|必須|需要)",
+            lowered,
+            flags=re.IGNORECASE,
+        ):
+            inputs["shareholder_vote_required"] = True
 
     return inputs
 
@@ -164,7 +194,11 @@ def _has_required_tool_inputs(tool_name: str, inputs: Dict[str, Any]) -> bool:
         "rule_lookup": {"rule_number"},
         "size_test_calculator": {"transaction_consideration", "transaction_type"},
         "transaction_classifier": {"highest_ratio", "transaction_type"},
-        "disclosure_checklist": {"classification"},
+        "disclosure_checklist": {
+            "classification",
+            "is_connected",
+            "shareholder_vote_required",
+        },
     }
     return required_by_tool.get(tool_name, set()).issubset(inputs)
 

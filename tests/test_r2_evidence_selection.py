@@ -124,6 +124,36 @@ def test_coverage_selection_does_not_treat_generic_prompt_words_as_evidence():
     assert selected.uncovered_subtasks == ["identify the grounded relationship"]
 
 
+def test_coverage_selection_recognizes_chinese_no_space_rule_reference():
+    task = "\u8bf7\u8bf4\u660e\u7b2c14A.35\u6761\u7684\u62ab\u9732\u8981\u6c42"
+    plan = PlannerOutput(
+        query_type="direct",
+        sub_queries=[task],
+        intent="rule_lookup",
+        sub_tasks=[task],
+        evidence_requirements={task: "medium"},
+    )
+    results = [
+        _result(
+            "wrong-rule",
+            "Disclosure requirements for a connected transaction.",
+            0.95,
+            "14A.36",
+        ),
+        _result(
+            "requested-rule",
+            "Rule 14A.35 sets the disclosure requirement.",
+            0.20,
+            "14A.35",
+        ),
+    ]
+
+    selected = EvidenceSelector(selection_policy="coverage_aware").select(plan, results)
+
+    assert selected.selected_chunks[0].chunk_id == "requested-rule"
+    assert selected.covered_subtasks == [task]
+
+
 class _StaticRetriever:
     def __init__(self, results: list[RetrievalResult]):
         self.results = results

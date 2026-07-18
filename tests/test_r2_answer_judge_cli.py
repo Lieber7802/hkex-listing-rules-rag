@@ -47,6 +47,8 @@ def test_answer_judge_cli_writes_one_assessment_per_case_level_result(tmp_path: 
             "--benchmark", str(benchmark),
             "--results", str(results),
             "--output", str(output),
+            "--backend", "deterministic",
+            "--diagnostic",
             "--checkpoint-every", "1",
         ],
         cwd=PROJECT_ROOT,
@@ -68,6 +70,8 @@ def test_answer_judge_cli_writes_one_assessment_per_case_level_result(tmp_path: 
             "--benchmark", str(benchmark),
             "--results", str(results),
             "--output", str(output),
+            "--backend", "deterministic",
+            "--diagnostic",
             "--resume",
             "--checkpoint-every", "1",
         ],
@@ -80,3 +84,23 @@ def test_answer_judge_cli_writes_one_assessment_per_case_level_result(tmp_path: 
     assert resumed.returncode == 0, resumed.stderr
     assert "Checkpointed" not in resumed.stdout
     assert len(read_jsonl(output, GroundedAnswerAssessment)) == 2
+
+
+def test_answer_judge_cli_requires_an_explicit_diagnostic_flag_for_deterministic_mode(tmp_path: Path):
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/judge_evaluation_answers.py",
+            "--benchmark", str(tmp_path / "benchmark.jsonl"),
+            "--results", str(tmp_path / "results.jsonl"),
+            "--output", str(tmp_path / "output.jsonl"),
+            "--backend", "deterministic",
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "requires --diagnostic" in completed.stderr

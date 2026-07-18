@@ -2,7 +2,7 @@
 
 ## Release Scope
 
-`v1.1-automated-audit-20260718` is the frozen R2 dataset release used for
+`v1.1-r2-automated` is the frozen R2 dataset release used for
 the automated system run. It contains 130 cases, the frozen source snapshot,
 the passed R1 isolation report, independent judge records, automated audit
 records, automated validation records, and an explicit quality-caveat file.
@@ -17,10 +17,14 @@ prompt hash, protocol, evidence dimensions, and status.
 
 ## Reporting Constraint
 
-Results from this release support a reproducible automated comparison of B3,
-A1, A2, and A3. They must not be described as human-expert-reviewed or as a
-human-validated confirmatory study. A later human-review release may supersede
-this one without changing its preserved artifacts.
+Results from this release support a reproducible automated engineering
+comparison of B3, A1, A2, and A3. They must not be described as
+human-expert-reviewed or as a human-validated confirmatory study. The
+post-run acceptance audit also found that the deterministic GAC scorer is not a
+valid confirmatory implementation of the R2 metric, that this release is not
+strictly unseen after prior v1.1 runs, and that a single DeepSeek run does not
+meet the registered three-repeat requirement. A later human-reviewed unseen
+release may supersede this one without changing its preserved artifacts.
 
 ## Quality Caveats
 

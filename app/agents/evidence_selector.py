@@ -15,7 +15,9 @@ _GENERIC_SUBTASK_TERMS = {
     "rules", "grounded", "hkex", "main", "board", "gem", "transaction",
 }
 _RULE_REFERENCE_RE = re.compile(
-    r"\brule\s+(\d+[a-z]?(?:\.\d+[a-z]?)?)\b", re.IGNORECASE,
+    r"(?:\brule\s*|(?:\u89c4\u5219|\u898f\u5247)\s*(?:\u7b2c\s*)?|\u7b2c\s*)"
+    r"(\d+[a-z]?(?:\.\d+[a-z]?)?(?:\(\d+\))?)(?:\s*(?:\u6761|\u689d))?",
+    re.IGNORECASE,
 )
 
 

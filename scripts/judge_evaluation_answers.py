@@ -19,7 +19,17 @@ def main() -> None:
     parser.add_argument("--benchmark", type=Path, required=True)
     parser.add_argument("--results", type=Path, nargs="+", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--backend", choices=["deterministic", "llm"], default="deterministic")
+    parser.add_argument(
+        "--backend",
+        choices=["deterministic", "llm"],
+        default="llm",
+        help="Use LLM for formal semantic GAC; deterministic is diagnostic only.",
+    )
+    parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="Required with --backend deterministic to acknowledge diagnostic-only output.",
+    )
     parser.add_argument("--model")
     parser.add_argument(
         "--checkpoint-every",
@@ -33,6 +43,8 @@ def main() -> None:
         help="Reuse matching assessments already present in --output.",
     )
     args = parser.parse_args()
+    if args.backend == "deterministic" and not args.diagnostic:
+        parser.error("--backend deterministic requires --diagnostic; it cannot produce formal GAC")
 
     cases = read_jsonl(args.benchmark, BenchmarkCase)
     case_map = {case.case_id: case for case in cases}
@@ -48,7 +60,7 @@ def main() -> None:
 
     judge = GroundedAnswerJudge(backend=args.backend, model=args.model)
     expected_backend = (
-        "deterministic"
+        "deterministic-diagnostic"
         if args.backend == "deterministic"
         else f"llm:{judge.model}"
     )

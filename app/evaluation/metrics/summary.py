@@ -11,7 +11,11 @@ from app.evaluation.schemas import (
     GroundedAnswerAssessment,
     MetricReadiness,
 )
-from app.evaluation.statistics import paired_bootstrap_difference, mcnemar_exact
+from app.evaluation.statistics import (
+    mcnemar_exact,
+    paired_bootstrap_difference,
+    paired_clustered_pooled_bootstrap_difference,
+)
 
 
 def _expected_for_case(case: BenchmarkCase):
@@ -40,7 +44,7 @@ def evaluate_rows(
         (assessment.system, assessment.case_id): assessment
         for assessment in grounded_assessments
     }
-    grounded_readiness = _grounded_answer_readiness(case_rows, assessment_map)
+    grounded_readiness = _grounded_answer_readiness(case_rows, case_map, assessment_map)
     for row in case_rows:
         grouped[row.system].append(row)
     output = {
@@ -62,7 +66,8 @@ def evaluate_rows(
         negative_scores = []
         multi_turn_scores = []
         latencies = []
-        grounded_scores = []
+        grounded_passed_points = 0
+        grounded_scorable_points = 0
         for row in system_rows:
             case = case_map[row.case_id]
             intent, route, points, expected_tools = _expected_for_case(case)
@@ -86,7 +91,10 @@ def evaluate_rows(
             answer_scores += (sum(_contains_point(row.answer, point.text) for point in points) / len(points)) if points else 1.0
             assessment = assessment_map.get((system, row.case_id))
             if assessment is not None:
-                grounded_scores.append(assessment.grounded_answer_completeness)
+                outcomes = _assessment_point_outcomes(assessment, points)
+                if outcomes is not None:
+                    grounded_passed_points += sum(outcomes)
+                    grounded_scorable_points += len(outcomes)
             if case.case_type.value == "negative":
                 expectation = case.negative_expectation
                 required = expectation.expected_message_points if expectation else []
@@ -147,10 +155,12 @@ def evaluate_rows(
             "citation_precision": sum(citation_precisions) / len(citation_precisions) if citation_precisions else None,
             "answer_point_coverage": answer_scores / count if count else None,
             "grounded_answer_completeness": (
-                sum(grounded_scores) / len(grounded_scores)
-                if len(grounded_scores) == count and count
+                grounded_passed_points / grounded_scorable_points
+                if grounded_scorable_points
                 else None
             ),
+            "grounded_answer_passed_points": grounded_passed_points,
+            "grounded_answer_scorable_points": grounded_scorable_points,
             "faithfulness": None, "response_relevancy": None, "factual_correctness": None,
             "intent_accuracy": intent_scores / count if system != "B3" and count else None,
             "route_accuracy": route_scores / count if system != "B3" and count else None,
@@ -187,15 +197,22 @@ def evaluate_rows(
         "faithfulness", "response_relevancy", "factual_correctness",
         "noise_sensitivity", "unsupported_claim_detection", "unsupported_claim_reduction",
     ]))
-    output["paired_comparisons"] = _paired_comparisons(grouped, assessment_map)
+    output["paired_comparisons"] = _paired_comparisons(
+        grouped,
+        case_map,
+        assessment_map,
+        grounded_readiness.ready,
+    )
     return output
 
 
 def _grounded_answer_readiness(
     rows: Sequence[EvaluationRunRow],
+    case_map: Mapping[str, BenchmarkCase],
     assessment_map: Mapping[tuple[str, str], GroundedAnswerAssessment],
 ) -> MetricReadiness:
     reasons = []
+    scorable_point_count = 0
     for row in rows:
         assessment = assessment_map.get((row.system, row.case_id))
         if assessment is None:
@@ -204,8 +221,24 @@ def _grounded_answer_readiness(
         answer_hash = hashlib.sha256(row.answer.encode("utf-8")).hexdigest()
         if assessment.answer_hash != answer_hash:
             reasons.append(f"stale grounded assessment for changed answer: {row.system}/{row.case_id}")
+        if not assessment.judge_backend.startswith("llm:"):
+            reasons.append(
+                f"non-semantic diagnostic assessment cannot support formal GAC: "
+                f"{row.system}/{row.case_id} ({assessment.judge_backend})"
+            )
+        case = case_map[row.case_id]
+        _, _, points, _ = _expected_for_case(case)
+        scorable_point_count += len(points)
+        outcomes = _assessment_point_outcomes(assessment, points)
+        if outcomes is None:
+            reasons.append(
+                f"grounded assessment point IDs do not match the benchmark: "
+                f"{row.system}/{row.case_id}"
+            )
     if not rows:
         reasons.append("no case-level rows are available")
+    if scorable_point_count == 0:
+        reasons.append("no scorable answer points are available")
     return MetricReadiness(
         metric_name="grounded_answer_completeness",
         ready=not reasons,
@@ -220,7 +253,21 @@ def _quantile(values, probability):
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (index - lower)
 
 
-def _paired_comparisons(grouped, assessment_map):
+def _assessment_point_outcomes(
+    assessment: GroundedAnswerAssessment,
+    points,
+) -> list[bool] | None:
+    expected_ids = [point.point_id for point in points]
+    assessments_by_id = {point.point_id: point for point in assessment.point_assessments}
+    if (
+        len(assessment.point_assessments) != len(assessments_by_id)
+        or set(assessments_by_id) != set(expected_ids)
+    ):
+        return None
+    return [assessments_by_id[point_id].passed for point_id in expected_ids]
+
+
+def _paired_comparisons(grouped, case_map, assessment_map, grounded_ready):
     comparisons = {}
     for baseline, candidate in (
         ("B3", "A1"), ("A1", "A2"), ("A1", "A3"),
@@ -239,17 +286,32 @@ def _paired_comparisons(grouped, assessment_map):
             "mcnemar": mcnemar_exact(baseline_success, candidate_success).model_dump(),
         }
         baseline_grounded = {
-            case_id: assessment_map[(baseline, case_id)].grounded_answer_completeness
+            case_id: _assessment_point_outcomes(
+                assessment_map[(baseline, case_id)],
+                _expected_for_case(case_map[case_id])[2],
+            )
             for case_id in baseline_rows
             if (baseline, case_id) in assessment_map
         }
         candidate_grounded = {
-            case_id: assessment_map[(candidate, case_id)].grounded_answer_completeness
+            case_id: _assessment_point_outcomes(
+                assessment_map[(candidate, case_id)],
+                _expected_for_case(case_map[case_id])[2],
+            )
             for case_id in candidate_rows
             if (candidate, case_id) in assessment_map
         }
-        if set(baseline_grounded) == set(baseline_rows) and set(candidate_grounded) == set(candidate_rows):
+        if (
+            grounded_ready
+            and set(baseline_grounded) == set(baseline_rows)
+            and set(candidate_grounded) == set(candidate_rows)
+            and all(outcomes is not None for outcomes in baseline_grounded.values())
+            and all(outcomes is not None for outcomes in candidate_grounded.values())
+        ):
             comparisons[f"{candidate}_vs_{baseline}"]["grounded_answer_completeness"] = (
-                paired_bootstrap_difference(baseline_grounded, candidate_grounded).model_dump()
+                paired_clustered_pooled_bootstrap_difference(
+                    baseline_grounded,
+                    candidate_grounded,
+                ).model_dump()
             )
     return comparisons
