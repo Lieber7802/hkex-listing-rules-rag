@@ -4,6 +4,8 @@
 
 This is the final frozen R2 evaluation run. No post-result tuning, benchmark replacement, configuration change, or repeat run was performed.
 
+**Post-run audit correction (2026-07-19):** the numeric GAC values in this report were produced by the deterministic answer judge. That judge treats token-overlap coverage as correctness and only checks mapped chunk/tool identifiers, so it does not fully implement the R2 plan's requirements for semantic correctness, direct evidence support, and non-overstated conclusions. The GAC values and their gates must therefore be treated as exploratory diagnostics, not a valid confirmatory primary outcome. The detailed acceptance audit records the precise defects and protocol gaps.
+
 - Run ID: `r2-auto-r1`
 - Code revision: `38fb1fd40cdc6d65d2cf7c1a1d1b6b96dbefd4a6`
 - Release: `v1.1-r2-automated`
@@ -51,7 +53,7 @@ The primary outcome is deterministic GAC. Differences are reported as the first 
 
 ## R2 Gate Outcome
 
-The R2 acceptance gate report is **not passed**. Five gates passed and two failed.
+The R2 acceptance gate report is **not passed**. Five gates passed and two failed. In addition, the audit found that the deterministic GAC implementation is not valid as the plan's confirmatory GAC; the gate result cannot be used to establish either a positive or negative confirmatory GAC claim.
 
 Passed:
 
@@ -68,9 +70,9 @@ Failed:
 
 ## What May Be Claimed
 
-The final paper can safely state that the implemented Agentic RAG system is functionally complete for the assessed workflow: it completed all 130 cases without execution failures, achieved perfect tool-result accuracy on the benchmark's tool cases, and improved citation precision and ungrounded answer-point coverage relative to B3.
+The final paper can safely state that the implemented Agentic RAG system completed all 130 automated benchmark cases without execution failures, achieved perfect tool-result accuracy on the benchmark's tool cases, and improved the report's identifier-overlap citation-precision proxy and lexical answer-point coverage relative to B3.
 
-The final paper must not claim that this run proves Agentic RAG has superior overall grounded-answer completeness over traditional RAG. The preregistered primary comparison was negative and statistically inconclusive. It also must not claim human expert validation, because the case pool was automatically reviewed only.
+The final paper must not claim that this run proves Agentic RAG has superior or inferior overall grounded-answer completeness over traditional RAG. The reported deterministic comparison is not a valid confirmatory GAC measure, and the formal protocol was not fully satisfied. It also must not claim human expert validation, because the case pool was automatically reviewed only.
 
 ## Required Limitations
 
@@ -79,7 +81,9 @@ The final paper must not claim that this run proves Agentic RAG has superior ove
 3. This is one formal run at temperature 0. DeepSeek does not provide a reproducible seed guarantee, so no cross-run variance estimate is available.
 4. The primary GAC gate and A1 latency gate failed. They should be reported as failed rather than silently omitted.
 5. Diagnostics requiring verifier fields are not available for B3, and tool-input accuracy is not meaningful for B3/A3 because those systems intentionally do not run tools.
+6. The final release reused query text that appeared in earlier v1.1 candidates/runs, so strict unseen-test isolation is not proven.
+7. The current preregistration document still describes historical A1-legacy/A1-new systems, while the actual formal run used B3/A1/A2/A3. This documentation mismatch must be resolved before any future confirmatory evaluation.
 
 ## Paper-Ready Result Paragraph
 
-On the frozen 130-case R2 benchmark, all four configurations completed without execution failures. The complete Agentic RAG configuration (A1) achieved 100% tool-result accuracy and improved citation precision from 9.23% for the traditional hybrid-RAG baseline (B3) to 12.50%, while answer-point coverage increased from 42.95% to 51.92%. However, the prespecified primary metric, deterministic grounded answer completeness, was 33.72% for A1 versus 38.46% for B3; the paired bootstrap difference was -4.74 percentage points (95% CI: -11.86 to 2.24). Therefore, this study does not claim a statistically confirmed overall GAC advantage for A1. A1 also incurred higher P95 latency (30.00 s versus 24.32 s for B3). These results show functional gains in routing, tool execution, evidence handling, and citation precision, while indicating that end-to-end grounded answer quality and latency remain open optimization targets.
+On the frozen 130-case automated benchmark, all four configurations completed without execution failures. The complete Agentic RAG configuration (A1) achieved 100% tool-result accuracy and improved the report's identifier-overlap citation-precision proxy from 9.23% for the traditional hybrid-RAG baseline (B3) to 12.50%, while lexical answer-point coverage increased from 42.95% to 51.92%. The initial deterministic GAC calculation was 33.72% for A1 versus 38.46% for B3; however, the post-run audit found that this scorer does not satisfy the planned confirmatory GAC definition, so it is not used to support a directional quality claim. A1 also incurred higher P95 latency (30.00 s versus 24.32 s for B3). These results show functional gains in routing and tool execution, while indicating that semantically grounded answer evaluation, strict release isolation, and tail latency remain open requirements for a confirmatory study.

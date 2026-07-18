@@ -4,6 +4,8 @@
 
 The R2 implementation and its single frozen formal evaluation are final. The evaluation must not be followed by another improvement round, selective rerun, threshold change, or benchmark edit. This protects the integrity of the result and matches the project's deadline and cost constraint.
 
+**Audit correction:** the run can be retained as an automated engineering evaluation, but it is not a strictly confirmatory R2 evaluation under the written plan. The deterministic GAC scorer did not evaluate semantic correctness or direct claim-to-evidence entailment, no human review occurred, the answer model has no verified deterministic seed guarantee yet only one run was executed, and strict test-set isolation is no longer proven. The quantitative GAC comparison must consequently be described as an exploratory diagnostic rather than a primary claim.
+
 The code test suite had already passed before the formal run: `538 passed`. Python compilation, the frontend production build, and `git diff --check` also passed. The formal run itself completed with exit code 0 and generated four manifests, four raw result files, deterministic answer assessments, exported metrics, and a gate report.
 
 ## 2. What Was Improved in the System
@@ -45,7 +47,7 @@ This distinction matters. A system can mention more expected points yet not show
 
 ### 3.3 The primary conclusion is negative/inconclusive
 
-The primary GAC result was lower for A1 than B3 (33.72% versus 38.46%). The paired bootstrap interval for A1 minus B3 was [-11.86 pp, 2.24 pp], which crosses zero. The evidence is therefore insufficient to claim an overall GAC improvement.
+The initial deterministic GAC result was lower for A1 than B3 (33.72% versus 38.46%). The paired bootstrap interval for A1 minus B3 was [-11.86 pp, 2.24 pp], which crosses zero. However, a post-run audit found that the deterministic scorer equates lexical overlap with correctness and identifier overlap with direct support. The evidence is therefore insufficient to claim either an overall GAC improvement or a confirmed overall GAC regression.
 
 The most plausible engineering reading is that A1's more selective evidence contract and tool-aware workflow make source-to-answer matching stricter. B3 often includes a broader retrieval/citation set, which can score better under a deterministic mapping even when it is less selective. This is an interpretation, not a causal proof. The result should be presented as a trade-off exposed by the benchmark, not as a hidden success or a system failure.
 
@@ -73,7 +75,7 @@ Use the R2 Final Evaluation Summary table. State that B3 is the traditional hybr
 
 Lead with the exact primary result, then the functional strengths:
 
-> The principal GAC comparison did not demonstrate a statistically confirmed advantage for the complete Agentic RAG configuration. Nevertheless, A1 completed all cases, achieved 100% tool-result accuracy, and improved citation precision and answer-point coverage. The result therefore supports the system's functional orchestration benefits while identifying evidence-grounded synthesis and tail latency as remaining limitations.
+> The automated engineering evaluation did not demonstrate a statistically confirmed advantage for the complete Agentic RAG configuration. The initially exported GAC comparison is reported only as an exploratory diagnostic because a subsequent audit found that its deterministic scorer did not meet the study's planned semantic-correctness and direct-evidence requirements. Nevertheless, A1 completed all cases, achieved 100% tool-result accuracy, and improved identifier-overlap citation precision and lexical answer-point coverage. The result therefore supports the system's functional orchestration benefits while identifying valid semantic groundedness evaluation and tail latency as remaining work.
 
 ### Limitations section
 
@@ -83,6 +85,9 @@ State all of the following explicitly:
 - The primary score used deterministic answer-point/evidence mapping.
 - One frozen run was conducted; external model nondeterminism was not measured through repeated runs.
 - The primary GAC and A1 P95 latency gates did not pass.
+- The deterministic GAC scorer is not adequate for the planned confirmatory primary metric.
+- The final release's strict unseen-test isolation is not proven because some queries overlapped earlier v1.1 candidate/runs.
+- The preregistration and automated-only release documentation use inconsistent formal-system labels.
 - Tool-input metrics are not meaningful for B3/A3 because their definitions intentionally omit tools.
 
 ## 5. What Not to Write
