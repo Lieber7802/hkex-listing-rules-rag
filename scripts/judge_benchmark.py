@@ -10,9 +10,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.evaluation.benchmark_judge import LLMBenchmarkJudge
-from app.evaluation.dataset_loader import read_jsonl, write_jsonl
+from app.evaluation.dataset_loader import read_jsonl, write_json, write_jsonl
 from app.evaluation.schemas import BenchmarkCase
-from app.evaluation.source_registry import SourceRegistry
+from app.evaluation.source_registry import SourceRegistry, sha256_file
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +38,17 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Bounded number of concurrent independent judge requests.",
     )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=5,
+        help="Maximum structured-output attempts per candidate.",
+    )
+    parser.add_argument(
+        "--run-manifest",
+        type=Path,
+        help="Optional JSON record of the frozen candidate input and judge settings.",
+    )
     return parser.parse_args()
 
 
@@ -47,6 +58,8 @@ def main() -> None:
     registry = SourceRegistry.load(args.source_registry)
     if args.workers < 1:
         raise ValueError("workers must be at least 1")
+    if args.max_attempts < 1:
+        raise ValueError("max-attempts must be at least 1")
     records_by_case_id = {}
     if args.resume and args.output.exists():
         for record in read_jsonl(args.output):
@@ -85,7 +98,11 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
-            executor.submit(LLMBenchmarkJudge(model=args.model).assess, case, registry): case
+            executor.submit(
+                LLMBenchmarkJudge(model=args.model, max_attempts=args.max_attempts).assess,
+                case,
+                registry,
+            ): case
             for case in pending_cases
         }
         for future in as_completed(futures):
@@ -103,6 +120,19 @@ def main() -> None:
         f"Wrote {len(records)} judge assessments to {args.output}; "
         f"{len(failed_case_ids)} cases failed after retries"
     )
+    if args.run_manifest:
+        write_json(args.run_manifest, {
+            "candidate_path": str(args.candidates),
+            "candidate_sha256": sha256_file(args.candidates),
+            "source_registry_path": str(args.source_registry),
+            "source_registry_sha256": sha256_file(args.source_registry),
+            "judge_model": args.model,
+            "max_attempts": args.max_attempts,
+            "workers": args.workers,
+            "completed_assessments": len(records),
+            "failed_case_ids": sorted(failed_case_ids),
+            "judgements_sha256": sha256_file(args.output),
+        })
 
 
 if __name__ == "__main__":

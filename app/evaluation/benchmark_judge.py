@@ -47,6 +47,12 @@ def build_judge_prompt(
         "score each point against its declared evidence kind.\n"
         "- Minimal verbatim rule statements are valid answer points when they directly state the "
         "requested obligation or procedure; do not require stylistic paraphrasing.\n"
+        "- language_correct concerns the user query or turn language, not the language of the "
+        "official source text or gold answer point. English HKEX evidence may validly support a "
+        "Chinese query.\n"
+        "- difficulty_fit is a preregistered sampling stratum rather than a legal proposition. "
+        "Do not downgrade it because a supplied rule statement looks straightforward; score it "
+        "as 5 unless the candidate is structurally malformed for its declared case type.\n"
         "Keep scores, answer_point_results, issues, and judge_reason mutually consistent.\n\n"
         "Required JSON keys:\n"
         "source_support, expected_rules_valid, answer_points_grounded, category_fit, "
@@ -64,7 +70,7 @@ class LLMBenchmarkJudge:
         self,
         model: Optional[str] = None,
         client: Optional[Any] = None,
-        max_attempts: int = 3,
+        max_attempts: int = 5,
     ):
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
@@ -168,7 +174,12 @@ def _normalize_response_payload(
         for point in [*case.answer_points, *(point for turn in case.turns for point in turn.answer_points)]
     }
     results = []
-    for raw_result in normalized.get("answer_point_results", []):
+    raw_results = normalized.get("answer_point_results", [])
+    if not isinstance(raw_results, list):
+        raise ValueError("answer_point_results must be a JSON array")
+    for raw_result in raw_results:
+        if not isinstance(raw_result, dict):
+            raise ValueError("each answer_point_results entry must be a JSON object")
         result = dict(raw_result)
         if "supported" not in result:
             support_value = next((

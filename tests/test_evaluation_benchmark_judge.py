@@ -44,6 +44,8 @@ def test_judge_prompt_is_stable_and_contains_only_declared_sources():
     assert hash_one == hash_two
     assert "chunk-main" in prompt_one
     assert "Return one JSON object" in prompt_one
+    assert "tool-backed answer point" in prompt_one
+    assert "language_correct concerns the user query" in prompt_one
 
 
 def test_llm_judge_uses_shared_shape_and_strict_json():
@@ -76,6 +78,7 @@ def test_llm_judge_uses_shared_shape_and_strict_json():
     assert assessment.source_support == 5
     assert completions.kwargs["temperature"] == 0.0
     assert completions.kwargs["response_format"] == {"type": "json_object"}
+    assert LLMBenchmarkJudge(model="independent-judge", client=client).max_attempts == 5
 
 
 def test_llm_judge_accepts_json_followed_by_model_notes():
