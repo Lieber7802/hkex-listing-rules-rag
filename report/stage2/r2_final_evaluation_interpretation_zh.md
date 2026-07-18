@@ -104,4 +104,3 @@ The raw artifacts needed for the paper are retained locally:
 - Code revision: `38fb1fd40cdc6d65d2cf7c1a1d1b6b96dbefd4a6`.
 
 The release manifest records the automated-only review restriction, source snapshot, benchmark hash, and all frozen input hashes. The run manifests record the model, temperatures, index hash, seed field, and per-system configuration.
-
